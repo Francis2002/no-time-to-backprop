@@ -23,7 +23,7 @@ ENABLE_DATASET=1
 # Parameter arrays
 methods=(TBPTT ONLINE) 
 architectures=(GRU ZUC)
-num_layers_arr=(1 2)
+num_layers_arr=(3)
 num_hidden_arr=(32)
 memory_arr=(1 2 3)
 activations=(sigmoid full_glu)
@@ -34,13 +34,13 @@ encoder_flags=("" "--encoder")
 layer_output_flags=("" "--layer_output")
 extra_skip_flags=("" "--extra_skip")
 has_non_linearity_in_recurrence_flags=("" "--has_non_linearity_in_recurrence")
-datasets=(bitcoin_otc bitcoin_alpha)
+datasets=(mooc)
 
 # Set default values when disabled
 [[ $ENABLE_METHODS -eq 0 ]] && methods=(ONLINE)
 [[ $ENABLE_ARCHITECTURES -eq 0 ]] && architectures=(ZUC)
 [[ $ENABLE_NUM_LAYERS -eq 0 ]] && num_layers_arr=(1)
-[[ $ENABLE_NUM_HIDDEN -eq 0 ]] && num_hidden_arr=(16)
+[[ $ENABLE_NUM_HIDDEN -eq 0 ]] && num_hidden_arr=(32)
 [[ $ENABLE_MEMORY -eq 0 ]] && memory_arr=(1)
 [[ $ENABLE_ACTIVATION -eq 0 ]] && activations=(full_glu)
 [[ $ENABLE_DECODER -eq 0 ]] && decoders=(MLP)
@@ -85,7 +85,26 @@ for dataset in "${datasets[@]}"; do
                               $layer_output_flag \
                               $extra_skip_flag \
                               $has_non_linearity_in_recurrence_flag \
-                              --dataset $dataset
+                              --dataset $dataset \
+                              --task link_classification \
+                              --batching_strategy none \
+                              --dropout 0.1 \
+                              --weight_decay 0.05 \
+                              --batch_size 0 \
+                              --num_epochs 5000 \
+                              --num_steps 1000 \
+                              --num_nodes 100 \
+                              "--double_dmodel" \
+                              --acc \
+                              "--dont_store_results" \
+                              --steps_for_scheduler 20 \
+                              --lr_schedule cosine \
+                              --rec_lr_schedule cosine \
+                              --plateau_factor 0.2 \
+                              --plateau_patience 20 \
+                              --lr_min 1e-6 \
+                              --hpt grid \
+                              --n_trials 20
 
                             echo "Experiment number: $i completed"
                           done

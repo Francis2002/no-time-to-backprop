@@ -125,6 +125,7 @@ def create_optimizer(args, hpt):
       rec_fn
     )
     # Gradient accumulation if you want to keep it
-    # tx = optax.MultiSteps(tx, n_accumulation_steps=1)
+    if not args.acc:
+        tx = optax.MultiSteps(tx, every_k_schedule=args.num_gradient_accumulation_steps)
 
     return tx
