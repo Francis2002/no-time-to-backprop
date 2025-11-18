@@ -1,0 +1,7 @@
+.venv
+_linux_venv_do_not_use
+__pycache__
+tgap/data/csvs
+tgap/data/gzs
+tgap/data/zips
+tgap/data/npzs
