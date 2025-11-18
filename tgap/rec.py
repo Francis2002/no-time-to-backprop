@@ -134,7 +134,7 @@ class LRU(nn.Module):
             else:
                 raise ValueError("Mixing type not recognized")
 
-        hidden_states = 0.5*lambda_states + Bu
+        hidden_states = self.normalizer * lambda_states + Bu
 
         return hidden_states
 
@@ -232,6 +232,15 @@ class LRU(nn.Module):
                 (2* self.d_hidden,),
             )
 
+        if self.mixing == "full":
+            self.normalizer = 0.5
+        elif self.mixing == "symmetric":
+            self.normalizer = 1.0
+        elif self.mixing == "none":
+            self.normalizer = 1.0
+        else:
+            raise ValueError("Mixing type not recognized")
+
     def __call__(self, inputs, raw_old_hidden_states, raw_traces=None):
         """
         Forward pass. If in training mode, additionally computes the eligibility traces that
@@ -289,11 +298,11 @@ class LRU(nn.Module):
 
                 # Update for trace lambda
                 new_traces_lambda_src_node = jnp.zeros_like(traces[0][0])
-                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(0.5* old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_src_node *= multiplier[0].reshape(1, self.d_hidden) # src hidden_states
 
                 new_traces_lambda_dst_node = jnp.zeros_like(traces[0][1])
-                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(0.5* old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_dst_node *= multiplier[1].reshape(1, self.d_hidden)
 
                 # Update for trace gamma
@@ -311,22 +320,22 @@ class LRU(nn.Module):
                 Lambda_elements = self.get_diag_lambda().reshape(4, self.d_hidden)
 
                 # Update for trace lambda
-                new_traces_lambda_src_node = (0.5* Lambda_elements[0] * traces[0][0] + 0.5* Lambda_elements[1] * traces[0][1]) # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
-                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(0.5* old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_src_node = (self.normalizer * Lambda_elements[0] * traces[0][0] + self.normalizer * Lambda_elements[1] * traces[0][1]) # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_src_node *= multiplier[0].reshape(1, self.d_hidden) # src hidden_states
 
-                new_traces_lambda_dst_node = 0.5*Lambda_elements[2] * traces[0][0] + 0.5*Lambda_elements[3] * traces[0][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
-                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(0.5* old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_dst_node = self.normalizer *Lambda_elements[2] * traces[0][0] + self.normalizer *Lambda_elements[3] * traces[0][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_dst_node *= multiplier[1].reshape(1, self.d_hidden)
                 
                 # Update for trace gamma
                 Bu_elements_gamma = Bu_elements.reshape(2, self.d_hidden) # (2*d_hidden)
 
-                new_traces_gamma_src_node = 0.5* Lambda_elements[0] * traces[1][0] + 0.5* Lambda_elements[1] * traces[1][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_gamma_src_node = self.normalizer * Lambda_elements[0] * traces[1][0] + self.normalizer * Lambda_elements[1] * traces[1][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
                 new_traces_gamma_src_node = new_traces_gamma_src_node.at[0].add(Bu_elements_gamma[0])
                 new_traces_gamma_src_node *= multiplier[0].reshape(1, self.d_hidden)
 
-                new_traces_gamma_dst_node = 0.5* Lambda_elements[2] * traces[1][0] + 0.5* Lambda_elements[3] * traces[1][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_gamma_dst_node = self.normalizer * Lambda_elements[2] * traces[1][0] + self.normalizer * Lambda_elements[3] * traces[1][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
                 new_traces_gamma_dst_node = new_traces_gamma_dst_node.at[1].add(Bu_elements_gamma[1])
                 new_traces_gamma_dst_node *= multiplier[1].reshape(1, self.d_hidden)
 
@@ -337,11 +346,11 @@ class LRU(nn.Module):
                 gammau_elements = jnp.outer(self.get_diag_gamma(), inputs
                 ).astype(jnp.complex64).reshape(2, self.d_hidden, self.d_model) if self.d_in is None else jnp.outer(self.get_diag_gamma(), inputs).astype(jnp.complex64).reshape(2, self.d_hidden, self.d_in) # (2, d_hidden, d_model) or (2, d_hidden, d_in)
 
-                new_traces_B_src_node = 0.5* full_Lambda_elements[0] * traces[2][0] + 0.5* full_Lambda_elements[1] * traces[2][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_B_src_node = self.normalizer * full_Lambda_elements[0] * traces[2][0] + self.normalizer * full_Lambda_elements[1] * traces[2][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
                 new_traces_B_src_node = new_traces_B_src_node.at[0].add(gammau_elements[0])
                 new_traces_B_src_node *= multiplier[0].reshape(1, self.d_hidden, 1)
 
-                new_traces_B_dst_node = 0.5* full_Lambda_elements[2] * traces[2][0] + 0.5* full_Lambda_elements[3] * traces[2][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_B_dst_node = self.normalizer * full_Lambda_elements[2] * traces[2][0] + self.normalizer * full_Lambda_elements[3] * traces[2][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
                 new_traces_B_dst_node = new_traces_B_dst_node.at[1].add(gammau_elements[1])
                 new_traces_B_dst_node *= multiplier[1].reshape(1, self.d_hidden, 1)
             else:
