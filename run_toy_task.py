@@ -26,6 +26,7 @@ from tgap.data.preprocessers.preprocess_kumar_temporal import preprocess_tempora
 import sys
 
 from tgap.lr_scheduling import create_optimizer, count_params
+from tgap.utils import print_tree_keys
 
 import optuna
 
@@ -836,7 +837,10 @@ for iter_num, item in enumerate(hpt_samples):
     print(f"[*] Trainable Parameters: {count_params(params)}")
     model_state = init_model()
     optimizer_state = optimizer.init(params)
-    
+
+    print("All params tree leaf keys:")
+    print_tree_keys(params)
+    print("----")
     # training loop
     losses = []
     val_losses = []
@@ -866,8 +870,10 @@ for iter_num, item in enumerate(hpt_samples):
         state = (params, optimizer_state, data_state, model_state, None) # None for grads, will be computed in unrolled_episode
 
         if args.dataset in ['toy']:
-            if len(model_state) == 2:
+            if method in ['ONLINE', 'TBPTT']:
                 model_state_for_fbptt, _ = model_state  # discard traces
+            else:
+                model_state_for_fbptt = model_state
 
             state_for_fbptt_grads = (params, optimizer_state, data_state, model_state_for_fbptt, None) # None for grads, will be computed in unrolled_episode_for_fbptt_grads
             (_, _, _, _, grads_for_cossim), _ = unrolled_episode_for_fbptt_grads(state_for_fbptt_grads)

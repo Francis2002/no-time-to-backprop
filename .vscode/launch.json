@@ -1,0 +1,50 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Test Grads",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "program": "${workspaceFolder}/run_toy_task.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "-m", "ONLINE",
+                "-a", "ZUC",
+                "--num_layers", "1",
+                "--num_hidden", "2",
+                "--memory", "1",
+                "--activation", "full_glu",
+                "--decoder", "MLP",
+                "--mixing", "none",
+                "--prenorm",
+                "--encoder",
+                "--layer_output",
+                "--extra_skip",
+                "--dataset", "toy",
+                "--task", "link_classification",
+                "--batching_strategy", "none",
+                "--dropout", "0.0",
+                "--weight_decay", "0.00",
+                "--batch_size", "0",
+                "--num_epochs", "1",
+                "--num_steps", "4",
+                "--num_nodes", "2",
+                "--double_dmodel",
+                "--dont_store_results",
+                "--steps_for_scheduler", "20",
+                "--lr_schedule", "cosine",
+                "--plateau_factor", "0.2",
+                "--plateau_patience", "20",
+                "--lr_min", "1e-6",
+                "--hpt", "grid",
+                "--n_trials", "20",
+                "--acc"
+            ]
+        }
+    ]
+}

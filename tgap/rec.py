@@ -62,7 +62,7 @@ class LRU(nn.Module):
         if self.exp_param:
             theta = jnp.exp(theta)
             nu = jnp.exp(nu)
-        if self.mixing == "none":
+        if self.mixing in ["none", "rotational"]:
             nu = nu.reshape(4, -1) * jnp.array([1, 0, 0, 1]).reshape(4, 1)
             theta = theta.reshape(4, -1) * jnp.array([1, 0, 0, 1]).reshape(4, 1)
         return jnp.exp(-nu + 1j * theta).reshape(-1)
@@ -119,7 +119,7 @@ class LRU(nn.Module):
 
         if self.training_mode == "bptt":
 
-            if self.mixing in ["full", "symmetric", "none"]:
+            if self.mixing in ["full", "symmetric", "none", "rotational"]:
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * old_hidden_states, axis=1).reshape(-1)
@@ -127,7 +127,7 @@ class LRU(nn.Module):
                 raise ValueError("Mixing type not recognized")
         else:
             
-            if self.mixing in ["full", "symmetric", "none"]:
+            if self.mixing in ["full", "symmetric", "none", "rotational"]:
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * jax.lax.stop_gradient(old_hidden_states), axis=1).reshape(-1)

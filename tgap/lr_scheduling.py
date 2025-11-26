@@ -87,7 +87,11 @@ def count_params(params):
             return int(n * (2 if is_complex(x) else 1))
         except Exception:
             return 0
-    sizes = jax.tree_util.tree_map(_size, params['cell']['params'])
+    if 'params' not in params['cell']:
+        param_tree = params['cell']
+    else:
+        param_tree = params['cell']['params']
+    sizes = jax.tree_util.tree_map(_size, param_tree)
     return int(sum(jax.tree_util.tree_leaves(sizes)))
 
 # --- Learning rate scheduling with optax -------------------------------------
