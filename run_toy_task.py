@@ -47,7 +47,7 @@ parser.add_argument('--num_steps', type=int, default=750, help='Number of steps 
 parser.add_argument('--num_nodes', type=int, default=100, help='Number of nodes')
 parser.add_argument('--num_layers', type=int, default=2, help='Number of layers')
 parser.add_argument('--num_hidden', type=int, default=32, help='Number of hidden units')
-parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC)')
+parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna')
 parser.add_argument('--memory', type=int, default=2, help='Number of memory units')
 parser.add_argument('--activation', type=str, default='none', help='Activation function (tanh, sigmoid, gelu or full_glu or half_glu1 or half_glu2 or none)')
 parser.add_argument('--prenorm', action='store_true', help='Use prenormalization')
@@ -56,7 +56,7 @@ parser.add_argument('--encoder', action='store_true', help='Use encoder')
 parser.add_argument('--layer_output', action='store_true', help='Use layer output')
 parser.add_argument('--extra_skip', action='store_true', help='Use extra skip connection')
 parser.add_argument('--decoder', type=str, default='MLP', help='Decoder type (MLP or NONE)')
-parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none)')
+parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none, rotational)')
 parser.add_argument('--has_non_linearity_in_recurrence', action='store_true', help='Use non-linearity inside the recurrent cell (only for LRU and ZUC)')
 parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
 parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
@@ -89,7 +89,7 @@ method = args.method.upper()
 architecture = args.architecture.upper()
 NUM_EPOCHS = args.num_epochs
 
-RESULTS_BASE = ['results', f'{args.dataset}_{method}']
+RESULTS_BASE = ['results_for_fixing_cossim', f'{args.dataset}_{method}']
 print(f"[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
 
 if args.dont_store_results:
@@ -185,8 +185,8 @@ if args.dataset in ['toy', 'epinions_ratings'] and args.task == 'link_classifica
 hpt_space = {
     #'memory': [1, 2, 3, 4, 5],
     'memory': [args.memory],
-    #'seed': [5, 11, 42, 123, 1984],
-    'seed': [43],
+    'seed': [5, 11, 42, 123, 1984],
+    #'seed': [43],
     'learning_rate': 1e-3,
     'beta1': 0.9, 
     'beta2': 0.999,
@@ -857,7 +857,7 @@ for iter_num, item in enumerate(hpt_samples):
     best_test_epoch = -1
     for epoch in range(NUM_EPOCHS):
 
-        print_condition = epoch % 500 == 0 or (method in ['ONLINE', 'SPATIAL'] and num_steps*(args.batch_size + 1) > 1000 and epoch % 50 == 0)  or (args.dataset not in ['toy'] and epoch % 1 == 0)
+        print_condition = epoch % 500 == 0 or (method in ['ONLINE', 'SPATIAL'] and num_steps*(args.batch_size + 1) > 1000 and epoch % 50 == 0)  or (args.dataset not in ['toy'] and epoch % 1 == 0) or (args.dataset in ['toy'] and args.num_epochs < 50 and epoch % 1 == 0)
         if print_condition:
             print(f"[*] Starting Training Epoch {epoch + 1}...")
 
@@ -881,7 +881,7 @@ for iter_num, item in enumerate(hpt_samples):
         (params, optimizer_state, data_state, model_state_for_val, grads_for_debug), l = unrolled_episode(state)
         
         # only at last epoch, print the grads and model state for debugging
-        if epoch == NUM_EPOCHS - 1 and args.dont_store_results:
+        if epoch == NUM_EPOCHS - 1 and args.dont_store_results and (not (args.dataset in ['toy'] and args.num_epochs < 50) or (args.num_epochs == 1)):
             print(f"[*] Epoch {epoch + 1} completed")
             print(f"[*] Loss: {l}")
             print(f"[*] grads_for_debug: {grads_for_debug}")
@@ -951,7 +951,7 @@ for iter_num, item in enumerate(hpt_samples):
 
         if not args.dont_store_results:
             # 3) Cosine similarity bookkeeping (toy only)
-            if args.dataset in ['toy']:
+            if args.dataset in ['toy'] and method not in ['FBPTT']:
                 per_epoch = {'overall': None, 'layers': {}}
 
                 # overall (all layers, all groups)

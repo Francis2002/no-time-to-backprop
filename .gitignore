@@ -5,3 +5,10 @@ tgap/data/csvs
 tgap/data/gzs
 tgap/data/zips
 tgap/data/npzs
+results_from_bravo
+results_extra
+results_for_fixing_cossim
+results_cossim_final
+run_all_benchmarks.sh
+run_all_toy.sh
+figs

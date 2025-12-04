@@ -44,6 +44,39 @@ class LRU(nn.Module):
     d_out: int = None  # output dimension, if not none, it means we are instantiating the last layer
     has_non_linearity_in_recurrence: bool = False  # whether to apply a non-linearity after the recurrent step
 
+    def _to_eigen_basis(self, h):
+        original_shape = h.shape
+        h = h.reshape(2, self.d_hidden)      # [2, H]
+        h_s, h_d = h[0], h[1]                    # each (H,)
+
+        phi = self.phi                           # (H,)
+        c = jnp.cos(phi)
+        s = jnp.sin(phi)
+
+        # z = R^T h
+        z1 = c * h_s - s * h_d                  # (H,)
+        z2 = s * h_s + c * h_d                  # (H,)
+
+        # return in original shape
+        return jnp.stack([z1, z2], axis=0).reshape(original_shape)
+
+    def _from_eigen_basis(self, z):
+        original_shape = z.shape
+        z = z.reshape(2, self.d_hidden)      # [2, H]
+        z1, z2 = z[0], z[1]
+
+        phi = self.phi                           # (H,)
+        c = jnp.cos(phi)
+        s = jnp.sin(phi)
+
+        # h = R z
+        h_s = c * z1 + s * z2                   # (H,)
+        h_d = -s * z1 + c * z2                  # (H,)
+
+        # return in original shape
+        return jnp.stack([h_s, h_d], axis=0).reshape(original_shape)
+
+
     def get_diag_lambda(self, nu=None, theta=None):
         """
         Transform parameters nu and theta into the diagonal of the recurrent
@@ -63,9 +96,10 @@ class LRU(nn.Module):
             theta = jnp.exp(theta)
             nu = jnp.exp(nu)
         if self.mixing in ["none", "rotational"]:
-            nu = nu.reshape(4, -1) * jnp.array([1, 0, 0, 1]).reshape(4, 1)
-            theta = theta.reshape(4, -1) * jnp.array([1, 0, 0, 1]).reshape(4, 1)
-        return jnp.exp(-nu + 1j * theta).reshape(-1)
+            nu = nu.reshape(4, -1)
+            theta = theta.reshape(4, -1)
+            return (jnp.exp(-nu + 1j * theta) * jnp.array([1, 0, 0, 1]).reshape(4, 1)).reshape(-1)
+        return (jnp.exp(-nu + 1j * theta)).reshape(-1)
 
     def get_diag_gamma(self):
         """
@@ -238,6 +272,9 @@ class LRU(nn.Module):
             self.normalizer = 1.0
         elif self.mixing == "none":
             self.normalizer = 1.0
+        elif self.mixing == "rotational":
+            self.normalizer = 1.0
+            self.phi = self.param("phi", matrix_init, (self.d_hidden,))
         else:
             raise ValueError("Mixing type not recognized")
 
@@ -248,6 +285,11 @@ class LRU(nn.Module):
         """
 
         old_hidden_states = jnp.reshape(raw_old_hidden_states, 2 * self.d_hidden)
+
+        if self.mixing == "rotational":
+            # Rotate old hidden states to the eigen basis. From here on, the variable old_hidden_states
+            # is always in the basis in which the recurrence happens - used in both the recurrence and the trace updates
+            old_hidden_states = self._to_eigen_basis(old_hidden_states)
 
         # Compute hidden states and outputs
         #hidden_states = self.get_hidden_states(inputs)
@@ -261,6 +303,11 @@ class LRU(nn.Module):
             # To obtain the spatially backpropagated errors sent to hidden_states
             # NOTE: only works if pert_hidden_states is equal to 0
             raw_hidden_states += self.pert_hidden_states.value
+
+        if self.mixing == "rotational":
+            # Rotate back to the original basis, but only after injecting perturbations! From here on,
+            # the variable raw_hidden_states is always in the original basis - used for output computation and return
+            raw_hidden_states = self._from_eigen_basis(raw_hidden_states)
 
         if self.has_layer_output:
             output = self.to_output_single_step(inputs, raw_hidden_states)
