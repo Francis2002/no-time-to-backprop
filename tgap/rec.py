@@ -44,37 +44,65 @@ class LRU(nn.Module):
     d_out: int = None  # output dimension, if not none, it means we are instantiating the last layer
     has_non_linearity_in_recurrence: bool = False  # whether to apply a non-linearity after the recurrent step
 
-    def _to_eigen_basis(self, h):
-        original_shape = h.shape
-        h = h.reshape(2, self.d_hidden)      # [2, H]
-        h_s, h_d = h[0], h[1]                    # each (H,)
+    def _rotate_pair_to_eigen(self, x):
+        """
+        x: array with shape (2, self.d_hidden, *extra_dims)
+        - axis 0: src/dst
+        - axis 1: hidden feature index j
+        - remaining axes: anything (lambda index, gamma index, d_model, ...)
+        Applies R(φ_j)^T to the (src,dst) pair for each feature j,
+        broadcasting over extra_dims.
+        """
+        original_shape = x.shape
+        # Collapse all extra dims into one
+        x = x.reshape(2, self.d_hidden, -1)        # (2, H, F)
+        x_s, x_d = x[0], x[1]                      # each (H, F)
 
-        phi = self.phi                           # (H,)
-        c = jnp.cos(phi)
-        s = jnp.sin(phi)
+        phi = self.phi                             # (H,)
+        c = jnp.cos(phi)[:, None]                  # (H, 1), broadcasts over F
+        s = jnp.sin(phi)[:, None]
 
         # z = R^T h
-        z1 = c * h_s - s * h_d                  # (H,)
-        z2 = s * h_s + c * h_d                  # (H,)
+        z1 = c * x_s - s * x_d                    # (H, F)
+        z2 = s * x_s + c * x_d                    # (H, F)
 
-        # return in original shape
-        return jnp.stack([z1, z2], axis=0).reshape(original_shape)
+        z = jnp.stack([z1, z2], axis=0)           # (2, H, F)
+        return z.reshape(original_shape)          # back to (2, H, *extra_dims)
 
-    def _from_eigen_basis(self, z):
+
+    def _rotate_pair_from_eigen(self, z):
+        """
+        Inverse of _rotate_pair_to_eigen:
+        z: shape (2, H, *extra_dims) in eigen basis,
+        returns (2, H, *extra_dims) in node basis.
+        """
         original_shape = z.shape
-        z = z.reshape(2, self.d_hidden)      # [2, H]
-        z1, z2 = z[0], z[1]
+        z = z.reshape(2, self.d_hidden, -1)        # (2, H, F)
+        z1, z2 = z[0], z[1]                        # (H, F)
 
-        phi = self.phi                           # (H,)
-        c = jnp.cos(phi)
-        s = jnp.sin(phi)
+        phi = self.phi
+        c = jnp.cos(phi)[:, None]
+        s = jnp.sin(phi)[:, None]
 
         # h = R z
-        h_s = c * z1 + s * z2                   # (H,)
-        h_d = -s * z1 + c * z2                  # (H,)
+        h_s = c * z1 + s * z2                     # (H, F)
+        h_d = -s * z1 + c * z2                    # (H, F)
 
-        # return in original shape
-        return jnp.stack([h_s, h_d], axis=0).reshape(original_shape)
+        h = jnp.stack([h_s, h_d], axis=0)         # (2, H, F)
+        return h.reshape(original_shape)
+
+
+    def _to_eigen_basis(self, h_flat):
+        h = h_flat.reshape(2, self.d_hidden)            # (2, H)
+        z = self._rotate_pair_to_eigen(h[:, :, None])   # (2, H, 1)
+        return z[:, :, 0].reshape(-1)                   # back to (2*H,)
+
+
+    def _from_eigen_basis(self, z_flat):
+        z = z_flat.reshape(2, self.d_hidden)              # (2, H)
+        h = self._rotate_pair_from_eigen(z[:, :, None])   # (2, H, 1)
+        return h[:, :, 0].reshape(-1)                     # back to (2*H,)
+
 
 
     def get_diag_lambda(self, nu=None, theta=None):
@@ -305,8 +333,9 @@ class LRU(nn.Module):
             raw_hidden_states += self.pert_hidden_states.value
 
         if self.mixing == "rotational":
-            # Rotate back to the original basis, but only after injecting perturbations! From here on,
-            # the variable raw_hidden_states is always in the original basis - used for output computation and return
+            # Rotate back to the original basis, but only after injecting perturbations! Here, the gradients of the perturbations will now represent dL/dz instead of dL/dh.
+            # For gradient computation, we will do dz/dtheta * dL/dz instead of dh/dtheta * dL/dh, so that we can keep the element-wise mult
+            # From here on, the variable raw_hidden_states is always in the original basis - used for output computation and return
             raw_hidden_states = self._from_eigen_basis(raw_hidden_states)
 
         if self.has_layer_output:
@@ -329,6 +358,27 @@ class LRU(nn.Module):
                 jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
                 jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
             )
+
+            if self.mixing == "rotational":
+                # Rotate traces to the eigen basis. Trace updates are always done in the eigen basis to keep the diagonal properties
+                lambda_tr_h, gamma_tr_h, B_tr_h = traces
+
+                # Bring H to axis 1 -> (2, H, *)
+                lambda_tr_h_for_rot = jnp.swapaxes(lambda_tr_h, 1, 2)         # (2, H, 4)       
+                gamma_tr_h_for_rot = jnp.swapaxes(gamma_tr_h, 1, 2)           # (2, H, 2)
+                B_tr_h_for_rot = jnp.swapaxes(B_tr_h, 1, 2)                   # (2, H, 2, d_model) or (2, H, 2, d_in)
+
+                # Rotate
+                lambda_tr_z_for_rot = self._rotate_pair_to_eigen(lambda_tr_h_for_rot)  # (2, H, 4)
+                gamma_tr_z_for_rot = self._rotate_pair_to_eigen(gamma_tr_h_for_rot)  # (2, H, 2)
+                B_tr_z_for_rot = self._rotate_pair_to_eigen(B_tr_h_for_rot)  # (2, H, 2, d_model) or (2, H, 2, d_in)
+
+                # Put it back into orignal shape
+                lambda_tr_z = jnp.swapaxes(lambda_tr_z_for_rot, 1, 2)         # (2, 4, H)
+                gamma_tr_z = jnp.swapaxes(gamma_tr_z_for_rot, 1, 2)           # (2, 2, H)
+                B_tr_z = jnp.swapaxes(B_tr_z_for_rot, 1, 2)                   # (2, 2, H, d_model) or (2, 2, H, d_in)
+
+                traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
 
             Bu_elements = self.get_B() @ inputs
 
@@ -403,7 +453,7 @@ class LRU(nn.Module):
             else:
                 new_traces_B_src_node = jnp.zeros_like(traces[2][0])
                 new_traces_B_dst_node = jnp.zeros_like(traces[2][1])
-
+                
         new_traces = [
             jnp.stack(
                 [new_traces_lambda_src_node, new_traces_lambda_dst_node], axis=0
@@ -413,8 +463,44 @@ class LRU(nn.Module):
             ).reshape(2, -1),
             jnp.stack(
                 [new_traces_B_src_node, new_traces_B_dst_node], axis=0
-            ).reshape(2, -1, self.d_model)
+            ).reshape(2, -1, self.d_model) if self.d_in is None else jnp.stack(
+                [new_traces_B_src_node, new_traces_B_dst_node], axis=0
+            ).reshape(2, -1, self.d_in)
         ]
+        if self.mixing == "rotational":
+            # Rotate traces back to the original basis
+            new_lambda_tr_z, new_gamma_tr_z, new_B_tr_z = new_traces
+
+            # Bring H to axis 1 -> (2, H, *)
+            new_lambda_tr_z_for_rot_back = jnp.reshape(new_lambda_tr_z, (2, 4, self.d_hidden))      # (2, 4, H)
+            new_lambda_tr_z_for_rot_back = jnp.swapaxes(new_lambda_tr_z_for_rot_back, 1, 2)         # (2, H, 4)
+
+            new_gamma_tr_z_for_rot_back = jnp.reshape(new_gamma_tr_z, (2, 2, self.d_hidden))        # (2, 2, H)
+            new_gamma_tr_z_for_rot_back = jnp.swapaxes(new_gamma_tr_z_for_rot_back, 1, 2)           # (2, H, 2)
+
+            new_B_tr_z_for_rot_back = jnp.reshape(new_B_tr_z, (2, 2, self.d_hidden, -1))            # (2, 2, H, d_model) or (2, 2, H, d_in)
+            new_B_tr_z_for_rot_back = jnp.swapaxes(new_B_tr_z_for_rot_back, 1, 2)                   # (2, H, 2, d_model) or (2, H, 2, d_in)
+
+            # Rotate back
+            new_lambda_tr_h_for_rot = self._rotate_pair_from_eigen(new_lambda_tr_z_for_rot_back)    # (2, H, 4)
+            new_gamma_tr_h_for_rot = self._rotate_pair_from_eigen(new_gamma_tr_z_for_rot_back)      # (2, H, 2)
+            new_B_tr_h_for_rot = self._rotate_pair_from_eigen(new_B_tr_z_for_rot_back)         # (2, H, 2, d_model) or (2, H, 2, d_in)
+
+            # Put it back into orignal shape
+            new_lambda_tr_h = jnp.swapaxes(new_lambda_tr_h_for_rot, 1, 2)         # (2, 4, H)
+            new_gamma_tr_h = jnp.swapaxes(new_gamma_tr_h_for_rot, 1, 2)           # (2, 2, H)
+            new_B_tr_h = jnp.swapaxes(new_B_tr_h_for_rot, 1, 2)                   # (2, 2, H, d_model) or (2, 2, H, d_in)
+
+            # Flatten to return same shape as self.mixing != 'rotational'
+            new_lambda_tr_flat = jnp.reshape(new_lambda_tr_h, (2, -1))
+            new_gamma_tr_flat =  jnp.reshape(new_gamma_tr_h, (2, -1))
+            new_B_tr_flat = jnp.reshape(new_B_tr_h, (2, -1, self.d_model)) if self.d_in is None else jnp.reshape(new_B_tr_h, (2, -1, self.d_in))
+
+            new_traces = [
+                new_lambda_tr_flat,
+                new_gamma_tr_flat,
+                new_B_tr_flat
+            ]
 
         return output, hidden_states, tuple(new_traces)
 
@@ -436,9 +522,29 @@ class LRU(nn.Module):
                 jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
             )
 
-        dL_dh = perturbation_grads['hidden_states'].reshape(2, 1, self.d_hidden)
+        dL = perturbation_grads['hidden_states'].reshape(2, 1, self.d_hidden)
 
-        delta_lambda = jnp.sum(dL_dh * traces[0], axis=0).reshape(-1)
+        if self.mixing == "rotational":
+            # ---- Convert traces from h-basis to z-basis ----
+            lambda_tr_h, gamma_tr_h, B_tr_h = traces
+            # lambda traces: (2, 4, H) -> (2, H, 4) -> rotate -> (2, H, 4) -> (2, 4, H)
+            lambda_tr_h_for_rot = jnp.swapaxes(lambda_tr_h, 1, 2)              # (2, H, 4)
+            lambda_tr_z_for_rot = self._rotate_pair_to_eigen(lambda_tr_h_for_rot)  # (2, H, 4)
+            lambda_tr_z = jnp.swapaxes(lambda_tr_z_for_rot, 1, 2)              # (2, 4, H)
+
+            # gamma traces: (2, 2, H) -> (2, H, 2) -> rotate -> (2, H, 2) -> (2, 2, H)
+            gamma_tr_h_for_rot = jnp.swapaxes(gamma_tr_h, 1, 2)               # (2, H, 2)
+            gamma_tr_z_for_rot = self._rotate_pair_to_eigen(gamma_tr_h_for_rot)    # (2, H, 2)
+            gamma_tr_z = jnp.swapaxes(gamma_tr_z_for_rot, 1, 2)               # (2, 2, H)
+
+            # B traces: (2, 2, H, D) -> (2, H, 2, D) -> rotate -> (2, H, 2, D) -> (2, 2, H, D)
+            B_tr_h_for_rot = jnp.swapaxes(B_tr_h, 1, 2)                       # (2, H, 2, D)
+            B_tr_z_for_rot = self._rotate_pair_to_eigen(B_tr_h_for_rot)       # (2, H, 2, D)
+            B_tr_z = jnp.swapaxes(B_tr_z_for_rot, 1, 2)                        # (2, 2, H, D)
+
+            traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
+
+        delta_lambda = jnp.sum(dL * traces[0], axis=0).reshape(-1)
 
         _, dl = jax.vjp(
             lambda nu, theta: self.get_diag_lambda(nu=nu, theta=theta),
@@ -452,7 +558,7 @@ class LRU(nn.Module):
         # Grads for gamma if needed
         if self.gamma_norm:
 
-            delta_gamma = jnp.sum(dL_dh * traces[1], axis=0).reshape(-1).real
+            delta_gamma = jnp.sum(dL * traces[1], axis=0).reshape(-1).real
 
             # as dgamma/dgamma_log = exp(gamma_log) = gamma
             grad["gamma_log"] = delta_gamma * self.get_diag_gamma()
@@ -460,7 +566,7 @@ class LRU(nn.Module):
         # Grads for B
         if self.approximation_type in ["snap1", "full", "full_rec_simpleB"]:
 
-            grad_B = jnp.sum(dL_dh.reshape(2, 1, self.d_hidden, 1) * traces[2], axis=0).reshape(-1, self.d_model) if self.d_in is None else jnp.sum(dL_dh.reshape(2, 1, self.d_hidden, 1) * traces[2], axis=0).reshape(-1, self.d_in) # (2*d_hidden, d_model) or (2*d_hidden, d_in)
+            grad_B = jnp.sum(dL.reshape(2, 1, self.d_hidden, 1) * traces[2], axis=0).reshape(-1, self.d_model) if self.d_in is None else jnp.sum(dL.reshape(2, 1, self.d_hidden, 1) * traces[2], axis=0).reshape(-1, self.d_in) # (2*d_hidden, d_model) or (2*d_hidden, d_in)
 
             grad["B_re"] = grad_B.real
             grad["B_im"] = -grad_B.imag  # Comes from the use of Writtinger derivatives

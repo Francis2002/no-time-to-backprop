@@ -9,6 +9,9 @@ results_from_bravo
 results_extra
 results_for_fixing_cossim
 results_cossim_final
+results_for_rotational_vs_none
 run_all_benchmarks.sh
 run_all_toy.sh
 figs
+grads_fbptt.txt
+grads_online.txt

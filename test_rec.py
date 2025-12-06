@@ -6,7 +6,7 @@ inputs = jnp.array([1.0, 2.0]) # shape
 y = jnp.ones([1, 3])
 # custom init of the params and state
 
-mixing='none'
+mixing='rotational'
 d_hidden = 3
 d_model = 2
 
@@ -47,9 +47,9 @@ else:
 old_hidden_states = jnp.ones((2, d_hidden), dtype=jnp.complex64) # d_hidden = 3, we have 2 hiddens => 6 here
 # for traces, we need a tuple with 3 elements (lambda gama and B) with the same shape as the parameters
 old_traces = (
-    jnp.zeros((2, 4*d_hidden), dtype=jnp.complex64),
-    jnp.zeros((2, 2*d_hidden), dtype=jnp.complex64),
-    jnp.zeros((2, 2*d_hidden, d_model), dtype=jnp.complex64),
+    jnp.ones((2, 4*d_hidden), dtype=jnp.complex64),
+    jnp.ones((2, 2*d_hidden), dtype=jnp.complex64),
+    jnp.ones((2, 2*d_hidden, d_model), dtype=jnp.complex64),
 )
 
 lru = LRU(d_hidden=d_hidden, d_model=d_model, seq_length=1, training_mode='online_full', mixing=mixing)

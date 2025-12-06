@@ -89,7 +89,7 @@ method = args.method.upper()
 architecture = args.architecture.upper()
 NUM_EPOCHS = args.num_epochs
 
-RESULTS_BASE = ['results_for_fixing_cossim', f'{args.dataset}_{method}']
+RESULTS_BASE = ['results_for_rotational_vs_none', f'{args.dataset}_{method}']
 print(f"[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
 
 if args.dont_store_results:
@@ -185,8 +185,8 @@ if args.dataset in ['toy', 'epinions_ratings'] and args.task == 'link_classifica
 hpt_space = {
     #'memory': [1, 2, 3, 4, 5],
     'memory': [args.memory],
-    'seed': [5, 11, 42, 123, 1984],
-    #'seed': [43],
+    #'seed': [5, 11, 42, 123, 1984],
+    'seed': [43],
     'learning_rate': 1e-3,
     'beta1': 0.9, 
     'beta2': 0.999,
