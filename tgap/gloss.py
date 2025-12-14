@@ -262,7 +262,7 @@ def with_feedforward_loss(cell: BaseGRNNCell, loss: FFModel) -> GRNNCell:
         new_states, outputs = cell.step(params['cell'], states, inputs, rng=rng)
         return new_states, loss.apply(params['loss'], outputs, targets, rng=rng)
     
-    return GRNNCell(init_params, cell.init_local, step_with_loss, init_B_traces=cell.init_B_traces, init_lambda_traces=cell.init_lambda_traces, init_gamma_traces=cell.init_gamma_traces)
+    return GRNNCell(init_params, cell.init_local, step_with_loss, init_B_traces=cell.init_B_traces, init_lambda_traces=cell.init_lambda_traces, init_gamma_traces=cell.init_gamma_traces, init_phi_traces=cell.init_phi_traces)
 
 def reverse_outputs(f: Callable):
     return lambda *args, **kwargs: f(*args, **kwargs)[::-1]
@@ -298,7 +298,7 @@ def with_truncated_grads(cell: BaseGRNNCell, has_aux=False) -> GRNNCell:
 
             return new_states, (loss, grads)
         
-    return GRNNCell(cell.init_params, cell.init_local, step_with_loss, init_B_traces=cell.init_B_traces, init_lambda_traces=cell.init_lambda_traces, init_gamma_traces=cell.init_gamma_traces)
+    return GRNNCell(cell.init_params, cell.init_local, step_with_loss, init_B_traces=cell.init_B_traces, init_lambda_traces=cell.init_lambda_traces, init_gamma_traces=cell.init_gamma_traces, init_phi_traces=cell.init_phi_traces)
 
 
 def with_feedforward_and_truncated_grads(cell: GRNNCell, loss: FFModel) -> GRNNCell:

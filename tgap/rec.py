@@ -123,7 +123,7 @@ class LRU(nn.Module):
         if self.exp_param:
             theta = jnp.exp(theta)
             nu = jnp.exp(nu)
-        if self.mixing in ["none", "rotational"]:
+        if self.mixing in ["none", "rotational", "rotational_full"]:
             nu = nu.reshape(4, -1)
             theta = theta.reshape(4, -1)
             return (jnp.exp(-nu + 1j * theta) * jnp.array([1, 0, 0, 1]).reshape(4, 1)).reshape(-1)
@@ -181,7 +181,7 @@ class LRU(nn.Module):
 
         if self.training_mode == "bptt":
 
-            if self.mixing in ["full", "symmetric", "none", "rotational"]:
+            if self.mixing in ["full", "symmetric", "none", "rotational", "rotational_full"]:
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * old_hidden_states, axis=1).reshape(-1)
@@ -189,7 +189,7 @@ class LRU(nn.Module):
                 raise ValueError("Mixing type not recognized")
         else:
             
-            if self.mixing in ["full", "symmetric", "none", "rotational"]:
+            if self.mixing in ["full", "symmetric", "none", "rotational", "rotational_full"]:
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * jax.lax.stop_gradient(old_hidden_states), axis=1).reshape(-1)
@@ -220,7 +220,7 @@ class LRU(nn.Module):
 
         # NOTE if exp_param is true, self.theta and self.nu actually represent the log of nu and
         # theta lambda is initialized uniformly in complex plane
-            
+
         self.theta = self.param(
             "theta",
             partial(theta_init, max_phase=self.max_phase, log=self.exp_param),
@@ -300,7 +300,7 @@ class LRU(nn.Module):
             self.normalizer = 1.0
         elif self.mixing == "none":
             self.normalizer = 1.0
-        elif self.mixing == "rotational":
+        elif self.mixing in ["rotational", "rotational_full"]:
             self.normalizer = 1.0
             self.phi = self.param("phi", matrix_init, (self.d_hidden,))
         else:
@@ -314,7 +314,7 @@ class LRU(nn.Module):
 
         old_hidden_states = jnp.reshape(raw_old_hidden_states, 2 * self.d_hidden)
 
-        if self.mixing == "rotational":
+        if self.mixing in ["rotational", "rotational_full"]:
             # Rotate old hidden states to the eigen basis. From here on, the variable old_hidden_states
             # is always in the basis in which the recurrence happens - used in both the recurrence and the trace updates
             old_hidden_states = self._to_eigen_basis(old_hidden_states)
@@ -332,10 +332,11 @@ class LRU(nn.Module):
             # NOTE: only works if pert_hidden_states is equal to 0
             raw_hidden_states += self.pert_hidden_states.value
 
-        if self.mixing == "rotational":
+        if self.mixing in ["rotational", "rotational_full"]:
             # Rotate back to the original basis, but only after injecting perturbations! Here, the gradients of the perturbations will now represent dL/dz instead of dL/dh.
             # For gradient computation, we will do dz/dtheta * dL/dz instead of dh/dtheta * dL/dh, so that we can keep the element-wise mult
             # From here on, the variable raw_hidden_states is always in the original basis - used for output computation and return
+            raw_hidden_states_in_eigen_basis = raw_hidden_states
             raw_hidden_states = self._from_eigen_basis(raw_hidden_states)
 
         if self.has_layer_output:
@@ -352,16 +353,28 @@ class LRU(nn.Module):
         if self.online and self.approximation_type not in ["spatial", "reservoir"]:
 
             # Unpack traces
-            raw_lambda_trace, raw_gamma_trace, raw_B_trace = raw_traces
-            traces = (
-                jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
-                jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
-                jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
-            )
+            if self.mixing == "rotational_full":
+                raw_lambda_trace, raw_gamma_trace, raw_B_trace, raw_phi_trace = raw_traces
+                traces = (
+                    jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
+                    jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
+                    jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in)),
+                    jnp.reshape(raw_phi_trace, (2, self.d_hidden,)),
+                )
+            else:
+                raw_lambda_trace, raw_gamma_trace, raw_B_trace = raw_traces
+                traces = (
+                    jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
+                    jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
+                    jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
+                )
 
-            if self.mixing == "rotational":
+            if self.mixing in ["rotational", "rotational_full"]:
                 # Rotate traces to the eigen basis. Trace updates are always done in the eigen basis to keep the diagonal properties
-                lambda_tr_h, gamma_tr_h, B_tr_h = traces
+                if self.mixing == "rotational_full":
+                    lambda_tr_h, gamma_tr_h, B_tr_h, phi_tr_h = traces
+                else:
+                    lambda_tr_h, gamma_tr_h, B_tr_h = traces
 
                 # Bring H to axis 1 -> (2, H, *)
                 lambda_tr_h_for_rot = jnp.swapaxes(lambda_tr_h, 1, 2)         # (2, H, 4)       
@@ -378,7 +391,14 @@ class LRU(nn.Module):
                 gamma_tr_z = jnp.swapaxes(gamma_tr_z_for_rot, 1, 2)           # (2, 2, H)
                 B_tr_z = jnp.swapaxes(B_tr_z_for_rot, 1, 2)                   # (2, 2, H, d_model) or (2, 2, H, d_in)
 
-                traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
+                if self.mixing == "rotational_full":
+                    # Rotate phi traces
+                    phi_tr_h_for_rot = phi_tr_h[:, :, None]                          # (2, H, 1)
+                    phi_tr_z_for_rot = self._rotate_pair_to_eigen(phi_tr_h_for_rot)  # (2, H, 1)
+                    phi_tr_z = phi_tr_z_for_rot[:, :, 0]                             # (2, H)
+                    traces = (lambda_tr_z, gamma_tr_z, B_tr_z, phi_tr_z)
+                else:
+                    traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
 
             Bu_elements = self.get_B() @ inputs
 
@@ -467,7 +487,7 @@ class LRU(nn.Module):
                 [new_traces_B_src_node, new_traces_B_dst_node], axis=0
             ).reshape(2, -1, self.d_in)
         ]
-        if self.mixing == "rotational":
+        if self.mixing in ["rotational", "rotational_full"]:
             # Rotate traces back to the original basis
             new_lambda_tr_z, new_gamma_tr_z, new_B_tr_z = new_traces
 
@@ -496,11 +516,50 @@ class LRU(nn.Module):
             new_gamma_tr_flat =  jnp.reshape(new_gamma_tr_h, (2, -1))
             new_B_tr_flat = jnp.reshape(new_B_tr_h, (2, -1, self.d_model)) if self.d_in is None else jnp.reshape(new_B_tr_h, (2, -1, self.d_in))
 
-            new_traces = [
-                new_lambda_tr_flat,
-                new_gamma_tr_flat,
-                new_B_tr_flat
-            ]
+            if self.mixing == "rotational_full":
+                # Add phi forward-mode eligibility update (only for rotational_full)
+
+                # z_t and z_{t+1} in eigen basis
+                z_t  = old_hidden_states.reshape(2, self.d_hidden)      # (2, H), already was in eigen basis
+                z_tp1 = raw_hidden_states_in_eigen_basis.reshape(2, self.d_hidden)     # (2, H)
+
+                # Λ per mode: we only want the diagonal λ_ss, λ_dd entries
+                Lambda_elements = self.get_diag_lambda().reshape(4, self.d_hidden)  # (4, H)
+                lambda1 = Lambda_elements[0]  # λ_ss (H,)
+                lambda2 = Lambda_elements[3]  # λ_dd (H,)
+                lambda_modes = jnp.stack([lambda1, lambda2], axis=0)    # (2, H)
+
+                # J z_t and J z_{t+1}, with J being the matrix [0 1; -1 0]
+                Jz_t   = jnp.stack([z_t[1],  -z_t[0]],   axis=0)        # (2, H)
+                Jz_tp1 = jnp.stack([z_tp1[1], -z_tp1[0]], axis=0)       # (2, H)
+
+                # e_{t+1}^phi = Λ e_t^phi + J z_{t+1} - Λ J z_t
+                new_phi_tr_z = lambda_modes * phi_tr_z + Jz_tp1 - lambda_modes * Jz_t  # (2, H)
+                new_phi_tr_z_for_rot_back = jnp.reshape(new_phi_tr_z, (2, 1, self.d_hidden))  # (2, 1, H)
+                new_phi_tr_z_for_rot_back = jnp.swapaxes(new_phi_tr_z_for_rot_back, 1, 2)  # (2, H, 1)
+
+                # Rotate back
+                new_phi_tr_h_for_rot = self._rotate_pair_from_eigen(new_phi_tr_z_for_rot_back)  # (2, H, 1)
+
+                # Put it back into orignal shape
+                new_phi_tr_h = jnp.swapaxes(new_phi_tr_h_for_rot, 1, 2)  # (2, 1, H)
+
+                # Flatten to return same shape as self.mixing != 'rotational' or 'rotational_full'
+                new_phi_tr_flat = jnp.reshape(new_phi_tr_h, (2, -1))
+
+                # Return traces with phi as well
+                new_traces = [
+                    new_lambda_tr_flat,
+                    new_gamma_tr_flat,
+                    new_B_tr_flat,
+                    new_phi_tr_flat
+                ]
+            else:
+                new_traces = [
+                    new_lambda_tr_flat,
+                    new_gamma_tr_flat,
+                    new_B_tr_flat
+                ]
 
         return output, hidden_states, tuple(new_traces)
 
@@ -511,22 +570,34 @@ class LRU(nn.Module):
         if self.training_mode in ["bptt", "online_spatial", "online_reservoir"]:
             raise ValueError("Upgrade gradient should not be called for this training mode")
 
-        # We need to change the gradients for lambda, gamma and B
+        # We need to change the gradients for lambda, gamma and B (and phi for rotational_full)
         # The others are automatically computed with spatial backpropagation
 
         # Unpack traces
-        raw_lambda_trace, raw_gamma_trace, raw_B_trace = raw_traces
-        traces = (
-                jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
-                jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
-                jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
-            )
+        if self.mixing == "rotational_full":
+            raw_lambda_trace, raw_gamma_trace, raw_B_trace, raw_phi_trace = raw_traces
+            traces = (
+                    jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
+                    jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
+                    jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in)),
+                    jnp.reshape(raw_phi_trace, (2, 1, self.d_hidden))
+                )
+        else:
+            raw_lambda_trace, raw_gamma_trace, raw_B_trace = raw_traces
+            traces = (
+                    jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
+                    jnp.reshape(raw_gamma_trace, (2, 2, self.d_hidden,)),
+                    jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_model)) if self.d_in is None else jnp.reshape(raw_B_trace, (2, 2, self.d_hidden, self.d_in))
+                )
 
         dL = perturbation_grads['hidden_states'].reshape(2, 1, self.d_hidden)
 
-        if self.mixing == "rotational":
+        if self.mixing in ["rotational", "rotational_full"]:
             # ---- Convert traces from h-basis to z-basis ----
-            lambda_tr_h, gamma_tr_h, B_tr_h = traces
+            if self.mixing == "rotational_full":
+                lambda_tr_h, gamma_tr_h, B_tr_h, phi_tr_h = traces
+            else:
+                lambda_tr_h, gamma_tr_h, B_tr_h = traces
             # lambda traces: (2, 4, H) -> (2, H, 4) -> rotate -> (2, H, 4) -> (2, 4, H)
             lambda_tr_h_for_rot = jnp.swapaxes(lambda_tr_h, 1, 2)              # (2, H, 4)
             lambda_tr_z_for_rot = self._rotate_pair_to_eigen(lambda_tr_h_for_rot)  # (2, H, 4)
@@ -542,7 +613,15 @@ class LRU(nn.Module):
             B_tr_z_for_rot = self._rotate_pair_to_eigen(B_tr_h_for_rot)       # (2, H, 2, D)
             B_tr_z = jnp.swapaxes(B_tr_z_for_rot, 1, 2)                        # (2, 2, H, D)
 
-            traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
+            if self.mixing == "rotational_full":
+                # phi traces: (2, 1, H) -> (2, H, 1) -> rotate -> (2, H, 1) -> (2, 1, H)
+                phi_tr_h_for_rot = jnp.swapaxes(phi_tr_h, 1, 2)               # (2, H, 1)
+                phi_tr_z_for_rot = self._rotate_pair_to_eigen(phi_tr_h_for_rot)    # (2, H, 1)
+                phi_tr_z = jnp.swapaxes(phi_tr_z_for_rot, 1, 2)               # (2, 1, H)
+
+                traces = (lambda_tr_z, gamma_tr_z, B_tr_z, phi_tr_z)
+            else:
+                traces = (lambda_tr_z, gamma_tr_z, B_tr_z)
 
         delta_lambda = jnp.sum(dL * traces[0], axis=0).reshape(-1)
 
@@ -570,5 +649,11 @@ class LRU(nn.Module):
 
             grad["B_re"] = grad_B.real
             grad["B_im"] = -grad_B.imag  # Comes from the use of Writtinger derivatives
+        
+        # Grads for phi if needed
+        if self.mixing == "rotational_full" and self.approximation_type in ["snap1", "full", "full_rec_simpleB"]:
+            delta_phi = jnp.real(jnp.sum(dL * traces[3], axis=0).reshape(-1))
+
+            grad["phi"] = delta_phi
 
         return grad

@@ -116,12 +116,12 @@ def _cos(a, b):
 def _extract_layer_seq_grads(grads, method, layer_idx):
     """
     Returns a dict with keys:
-      'nu','theta','gamma_log','B_re','B_im','D' (some may be None)
+      'nu','theta','gamma_log','B_re','B_im','D', and 'phi' (if mixing in ['rotational', 'rotational_full']) (some may be none)
     """
     layer = grads['cell']['params']['encoder'][f'layers_{layer_idx}']['seq']
     # Some models may lack D; guard with .get
     
-    return {
+    return_dict = {
         'nu':        layer.get('nu',        None),
         'theta':     layer.get('theta',     None),
         'gamma_log': layer.get('gamma_log', None),
@@ -130,12 +130,18 @@ def _extract_layer_seq_grads(grads, method, layer_idx):
         'D':         layer.get('D',         None),
     }
 
+    if args.mixing in ['rotational', 'rotational_full']:
+        return_dict['phi'] = layer.get('phi', None)
+
+    return return_dict
+
 def _layer_group_vectors(grads, method, layer_idx):
     """
     Builds concatenated vectors for groups per layer:
       - 'lambda' = [nu, theta]
       - 'gamma'  = [gamma_log]
       - 'B'      = [B_re, B_im]
+      - 'phi'    = [phi] (if mixing in ['rotational', 'rotational_full'])
       - 'all'    = all of the above
     Returns a dict of numpy vectors.
     """
@@ -150,6 +156,11 @@ def _layer_group_vectors(grads, method, layer_idx):
     gam = _concat_valid([gamma_log])
     B   = _concat_valid([B_re, B_im])
     allv = _concat_valid([lam, gam, B])
+
+    if args.mixing in ['rotational', 'rotational_full']:
+        phi = _np_array(g['phi'])
+        allv = _concat_valid([lam, gam, B, phi])
+        return {'lambda': lam, 'gamma': gam, 'B': B, 'phi': phi, 'all': allv}
 
     return {'lambda': lam, 'gamma': gam, 'B': B, 'all': allv}
 
@@ -269,28 +280,48 @@ def make_model_step(model, num_nodes, mode="training"):
             set_lambda_traces = store_set_dedupe
             set_gamma_traces = store_set_dedupe
             set_B_traces = store_set_dedupe
+
+            if args.mixing == 'rotational_full':
+                init_phi_traces = partial(memory_store, example_state=model.init_phi_traces(1), num_entries=num_nodes + 1)
+                get_phi_traces = store_get
+                set_phi_traces = store_set_dedupe
         else:
             init_lambda_traces, get_lambda_traces, set_lambda_traces = state_store(num_nodes, model.init_lambda_traces, numpy=False)
             init_gamma_traces, get_gamma_traces, set_gamma_traces = state_store(num_nodes, model.init_gamma_traces, numpy=False)
             init_B_traces, get_B_traces, set_B_traces = state_store(num_nodes, model.init_B_traces, numpy=False)
+
+            if args.mixing == 'rotational_full':
+                init_phi_traces, get_phi_traces, set_phi_traces = state_store(num_nodes, model.init_phi_traces, numpy=False)
         
         def init_model_traces():
             lambda_traces = init_lambda_traces()
             gamma_traces = init_gamma_traces()
             B_traces = init_B_traces()
-            return (lambda_traces, gamma_traces, B_traces)
+            if args.mixing == 'rotational_full':
+                phi_traces = init_phi_traces()
+                return (lambda_traces, gamma_traces, B_traces, phi_traces)
+            else:
+                return (lambda_traces, gamma_traces, B_traces)
         
         def get_traces(traces, nodes):
             batch_lambda_traces = get_lambda_traces(traces[0], nodes)
             batch_gamma_traces = get_gamma_traces(traces[1], nodes)
             batch_B_traces = get_B_traces(traces[2], nodes)
-            return (batch_lambda_traces, batch_gamma_traces, batch_B_traces)
+            if args.mixing == 'rotational_full':
+                batch_phi_traces = get_phi_traces(traces[3], nodes)
+                return (batch_lambda_traces, batch_gamma_traces, batch_B_traces, batch_phi_traces)
+            else:
+                return (batch_lambda_traces, batch_gamma_traces, batch_B_traces)
         
         def set_traces(traces, nodes, new_batch_traces):
             new_lambda_traces = set_lambda_traces(traces[0], nodes, new_batch_traces[0])
             new_gamma_traces = set_gamma_traces(traces[1], nodes, new_batch_traces[1])
             new_B_traces = set_B_traces(traces[2], nodes, new_batch_traces[2])
-            return (new_lambda_traces, new_gamma_traces, new_B_traces)
+            if args.mixing == 'rotational_full':
+                new_phi_traces = set_phi_traces(traces[3], nodes, new_batch_traces[3])
+                return (new_lambda_traces, new_gamma_traces, new_B_traces, new_phi_traces)
+            else:
+                return (new_lambda_traces, new_gamma_traces, new_B_traces)
 
     def init_model(_=None):
         if method in ['ONLINE', 'TBPTT'] and mode == "training":
@@ -321,22 +352,38 @@ def make_model_step(model, num_nodes, mode="training"):
 
         if method in ['ONLINE', 'TBPTT'] and mode == "training":
             raw_batch_traces = get_traces(traces, nodes)
-
-            lambda_traces, gamma_traces, B_traces = raw_batch_traces
+            
+            if args.mixing == 'rotational_full':
+                lambda_traces, gamma_traces, B_traces, phi_traces = raw_batch_traces
+            else:
+                lambda_traces, gamma_traces, B_traces = raw_batch_traces
+                
             n_layers = len(lambda_traces)
             
             # Restructure traces by layer instead of by trace type # TODO
 
             if args.batch_size == 0:
-                batch_traces = tuple(
-                    (lambda_traces[i], gamma_traces[i], B_traces[i])
-                    for i in range(n_layers)
-                )
+                if args.mixing == 'rotational_full':
+                    batch_traces = tuple(
+                        (lambda_traces[i], gamma_traces[i], B_traces[i], phi_traces[i])
+                        for i in range(n_layers)
+                    )
+                else:
+                    batch_traces = tuple(
+                        (lambda_traces[i], gamma_traces[i], B_traces[i])
+                        for i in range(n_layers)
+                    )
             else:
-                batch_traces = tuple(
-                    (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
-                    for i in range(n_layers)
-                )
+                if args.mixing == 'rotational_full':
+                    batch_traces = tuple(
+                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)), phi_traces[i].reshape((args.batch_size, 2, -1)))
+                        for i in range(n_layers)
+                    )
+                else:
+                    batch_traces = tuple(
+                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
+                        for i in range(n_layers)
+                    )
 
             batch_states_and_traces = (batch_states, batch_traces)
 
@@ -355,13 +402,21 @@ def make_model_step(model, num_nodes, mode="training"):
                 new_batch_lambda_traces = tuple(new_batch_traces[i][0] for i in range(n_layers))
                 new_batch_gamma_traces = tuple(new_batch_traces[i][1] for i in range(n_layers))
                 new_batch_B_traces = tuple(new_batch_traces[i][2] for i in range(n_layers))
-                new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
+                if args.mixing == 'rotational_full':
+                    new_batch_phi_traces = tuple(new_batch_traces[i][3] for i in range(n_layers))
+                    new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces, new_batch_phi_traces)
+                else:
+                    new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
             else:
                 # Restructure traces back to original format
                 new_batch_lambda_traces = tuple(new_batch_traces[i][0].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
                 new_batch_gamma_traces = tuple(new_batch_traces[i][1].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
                 new_batch_B_traces = tuple(new_batch_traces[i][2].reshape((args.batch_size * 2,) + new_batch_traces[i][2].shape[2::]) for i in range(n_layers))
-                new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
+                if args.mixing == 'rotational_full':
+                    new_batch_phi_traces = tuple(new_batch_traces[i][3].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
+                    new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces, new_batch_phi_traces)
+                else:
+                    new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
         else:
             
             new_batch_states, outputs = model.step(params, batch_states, inputs, target, rng_model)
@@ -455,20 +510,36 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
             nodes = jnp.array((new_edge[0], new_edge[1]))
             raw_batch_traces = get_traces(traces, nodes)
 
-            lambda_traces, gamma_traces, B_traces = raw_batch_traces
+            if args.mixing == 'rotational_full':
+                lambda_traces, gamma_traces, B_traces, phi_traces = raw_batch_traces
+            else:
+                lambda_traces, gamma_traces, B_traces = raw_batch_traces
+
             n_layers = len(lambda_traces)
             
             # Restructure traces by layer instead of by trace type
             if args.batch_size == 0:
-                batch_traces = tuple(
-                    (lambda_traces[i], gamma_traces[i], B_traces[i])
-                    for i in range(n_layers)
-                )
+                if args.mixing == 'rotational_full':
+                    batch_traces = tuple(
+                        (lambda_traces[i], gamma_traces[i], B_traces[i], phi_traces[i])
+                        for i in range(n_layers)
+                    )
+                else:
+                    batch_traces = tuple(
+                        (lambda_traces[i], gamma_traces[i], B_traces[i])
+                        for i in range(n_layers)
+                    )
             else:
-                batch_traces = tuple(
-                    (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
-                    for i in range(n_layers)
-                )
+                if args.mixing == 'rotational_full':
+                    batch_traces = tuple(
+                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)), phi_traces[i].reshape((args.batch_size, 2, -1)))
+                        for i in range(n_layers)
+                    )
+                else:
+                    batch_traces = tuple(
+                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
+                        for i in range(n_layers)
+                    )
 
                 grads['cell']['params'] = jax.tree_util.tree_map(
                     lambda s: jnp.repeat(s[None, :], args.batch_size, axis=0) / args.batch_size,
@@ -969,6 +1040,8 @@ for iter_num, item in enumerate(hpt_samples):
                         'B'     : _cos(md_vecs['B'],      fb_vecs['B'])      if md_vecs['B'].size      and fb_vecs['B'].size      else float('nan'),
                         'all'   : _cos(md_vecs['all'],    fb_vecs['all'])    if md_vecs['all'].size    and fb_vecs['all'].size    else float('nan'),
                     }
+                    if args.mixing in ['rotational', 'rotational_full']:
+                        per_epoch['layers'][f'layer_{li}']['phi'] = _cos(md_vecs['phi'], fb_vecs['phi']) if md_vecs['phi'].size and fb_vecs['phi'].size else float('nan')
 
                 cosine_history.append(per_epoch)
 
@@ -976,7 +1049,10 @@ for iter_num, item in enumerate(hpt_samples):
                     print(f"[*] Cosine Similarity (overall): {per_epoch['overall']}")
                     for li in range(args.num_layers):
                         layer_cos = per_epoch['layers'][f'layer_{li}']
-                        print(f"    Layer {li}: lambda: {layer_cos['lambda']}, gamma: {layer_cos['gamma']}, B: {layer_cos['B']}, all: {layer_cos['all']}")
+                        if args.mixing in ['rotational', 'rotational_full']:
+                            print(f"    Layer {li}: lambda: {layer_cos['lambda']}, gamma: {layer_cos['gamma']}, B: {layer_cos['B']}, phi: {layer_cos['phi']}, all: {layer_cos['all']}")
+                        else:
+                            print(f"    Layer {li}: lambda: {layer_cos['lambda']}, gamma: {layer_cos['gamma']}, B: {layer_cos['B']}, all: {layer_cos['all']}")
                     print()
 
         data_state = init_data(data_state[-1])

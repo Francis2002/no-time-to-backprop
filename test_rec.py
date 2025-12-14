@@ -10,7 +10,7 @@ mixing='rotational'
 d_hidden = 3
 d_model = 2
 
-if mixing != 'rotational':
+if mixing not in ['rotational', 'rotational_full']:
     params_states = {
         "params": {
             "B_re": jnp.ones((2*d_hidden, d_model)),
@@ -50,6 +50,11 @@ old_traces = (
     jnp.ones((2, 4*d_hidden), dtype=jnp.complex64),
     jnp.ones((2, 2*d_hidden), dtype=jnp.complex64),
     jnp.ones((2, 2*d_hidden, d_model), dtype=jnp.complex64),
+) if mixing != 'rotational_full' else (
+    jnp.ones((2, 4*d_hidden), dtype=jnp.complex64),
+    jnp.ones((2, 2*d_hidden), dtype=jnp.complex64),
+    jnp.ones((2, 2*d_hidden, d_model), dtype=jnp.complex64),
+    jnp.ones((2, d_hidden), dtype=jnp.complex64),
 )
 
 lru = LRU(d_hidden=d_hidden, d_model=d_model, seq_length=1, training_mode='online_full', mixing=mixing)

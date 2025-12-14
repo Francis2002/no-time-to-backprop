@@ -79,6 +79,7 @@ class GRNNCell(BaseGRNNCell):
     init_B_traces: Optional[Callable] = None
     init_lambda_traces: Optional[Callable] = None
     init_gamma_traces: Optional[Callable] = None
+    init_phi_traces: Optional[Callable] = None
     update_gradients: Optional[Callable] = None
 
 
@@ -774,6 +775,9 @@ def ZucchetCell(
 
     def init_gamma_traces(batch_size):
         return tuple(zero_local_state_initializer(2*d_hidden, dtype=jnp.complex64)(batch_size) for _ in range(n_layers))
+    
+    def init_phi_traces(batch_size):
+        return tuple(zero_local_state_initializer(d_hidden, dtype=jnp.complex64)(batch_size) for _ in range(n_layers))
 
     def step(params, states, inputs, rng):
 
@@ -793,4 +797,4 @@ def ZucchetCell(
         updated_grads = model.apply(params, grads['cell']['params'], traces, perturbation_grads, method=model.update_gradients)
         return updated_grads
         
-    return GRNNCell(init_params, init_state, step, symmetric=True, init_lambda_traces=init_lambda_traces, init_gamma_traces=init_gamma_traces, init_B_traces=init_B_traces, update_gradients=update_gradients)
+    return GRNNCell(init_params, init_state, step, symmetric=True, init_lambda_traces=init_lambda_traces, init_gamma_traces=init_gamma_traces, init_B_traces=init_B_traces, init_phi_traces=init_phi_traces, update_gradients=update_gradients)
