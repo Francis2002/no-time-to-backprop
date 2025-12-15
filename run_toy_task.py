@@ -1,3 +1,7 @@
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"  # Don't pre-allocate all memory
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.80"  # Use max 80% of GPU
+
 import argparse
 import numpy as np
 import jax
