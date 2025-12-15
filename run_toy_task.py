@@ -42,6 +42,7 @@ parser.add_argument('-a', '--architecture', type=str, choices=['GRU', 'LRU', 'MI
 parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
 parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
 parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
+parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
 parser.add_argument('--batching_strategy', type=str, default='none', help='Batching strategy (none or rearranged)')
 parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
 parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay')
@@ -202,7 +203,7 @@ hpt_space = {
     'memory': [args.memory],
     #'seed': [5, 11, 42, 123, 1984],
     'seed': [43],
-    'learning_rate': 1e-3,
+    'learning_rate': [args.lr],
     'beta1': 0.9, 
     'beta2': 0.999,
     #'weight_decay': 0.0001,
