@@ -92,7 +92,6 @@ for dataset in "${datasets[@]}"; do
                               --weight_decay 0.005 \
                               --batch_size 50 \
                               --num_epochs 200 \
-                              "--double_dmodel" \
                               --num_gradient_accumulation_steps 32 \
                               --dedupe \
                               --steps_for_scheduler 100 \
