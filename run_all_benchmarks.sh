@@ -89,9 +89,9 @@ for dataset in "${datasets[@]}"; do
                               --task link_classification \
                               --batching_strategy none \
                               --dropout 0.15 \
-                              --weight_decay 0.05 \
+                              --weight_decay 0.005 \
                               --batch_size 50 \
-                              --num_epochs 50 \
+                              --num_epochs 200 \
                               "--double_dmodel" \
                               --num_gradient_accumulation_steps 32 \
                               --dedupe \
