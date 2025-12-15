@@ -78,11 +78,11 @@ class FFModel:
     apply: Callable
     has_aux: bool = False
 
-    def init_params(rng: jax.random.KeyArray):
+    def init_params(rng: jax.Array):
         """Initializes parameters of model.
 
         Args:
-            rng (KeyArray): PRNG key for initializer.
+            rng (jax.Array): PRNG key for initializer.
 
         Returns:
             pytree: Parameters of model.

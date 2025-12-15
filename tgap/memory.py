@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, tree_map
+from jax import jit
+from jax.tree_util import tree_map
 from jax.tree_util import tree_flatten, tree_unflatten
 
 from jax import vmap

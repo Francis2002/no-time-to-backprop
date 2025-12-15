@@ -88,10 +88,10 @@
             ]
         },
         {
-            "name": "Test tiny model on tiny graph",
+            "name": "Test tiny model on tiny graph with py12 venv",
             "type": "debugpy",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${workspaceFolder}/.venv_py12/bin/python",
             "program": "${workspaceFolder}/run_toy_task.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
