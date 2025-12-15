@@ -11,8 +11,6 @@ results_extra
 results_for_fixing_cossim
 results_cossim_final
 results_for_rotational_vs_none
-run_all_benchmarks.sh
-run_all_toy.sh
 figs_*
 grads_fbptt.txt
 grads_online.txt
