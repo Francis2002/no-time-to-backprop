@@ -908,7 +908,7 @@ for iter_num, item in enumerate(hpt_samples):
     print(f"[*] Trainable Parameters: {count_params(params)}")
     # Verify device
     first_param = jax.tree_util.tree_leaves(params)[0]
-    print(f"[*] Model running on device: {first_param.device()}")
+    print(f"[*] Model running on device: {first_param.device}")
     model_state = init_model()
     optimizer_state = optimizer.init(params)
 
