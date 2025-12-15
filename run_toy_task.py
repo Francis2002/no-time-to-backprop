@@ -9,6 +9,9 @@ from jax import lax
 from functools import partial
 from pathlib import Path
 
+# Resolve project root from script location (works on Mac, Linux, Colab)
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 from tgap.grnn import SymmetricGRUCell, MultiLayerLRUCellReal, SymmetricMinGRUCell, ZucchetCell
 from tgap.gloss import bce, mse, MLP, with_loss, with_loss_without_mlp, with_feedforward_loss, with_feedforward_and_truncated_grads, metrics_fake_loss, compute_metrics_from_logits
 from tgap.memory import state_store, store_set_dedupe, store_get, memory_store
@@ -19,9 +22,6 @@ import csv
 import os
 
 from tgap.data.sampler_stream import get_stream_sampler_from_npz
-from tgap.data.preprocessers.preprocess_bitcoin import preprocess_bitcoin_csv
-from tgap.data.preprocessers.preprocess_epinions_ratings import preprocess_epinions_ratings_zip
-from tgap.data.preprocessers.preprocess_wikirfa import preprocess_wikirfa_gz
 from tgap.data.preprocessers.preprocess_kumar_temporal import preprocess_temporal_csv
 import sys
 
@@ -596,70 +596,24 @@ for iter_num, item in enumerate(hpt_samples):
         print(f"[*] Created toy data with {args.num_nodes} nodes")
         num_nodes = args.num_nodes
         num_steps = args.num_steps
-    
-    elif args.dataset == 'bitcoin_otc':
-        # Example (OTC):
-        preprocess_bitcoin_csv("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/csvs/soc-sign-bitcoinotc.csv", "/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_otc_stream.npz", use_sign_label=False, val_ratio=0.15, test_ratio=0.15)
-
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_otc_stream.npz", split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_otc_stream.npz", split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_otc_stream.npz", split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        print(f"[*] Loaded data from /Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_otc_stream.npz with {num_nodes} nodes")
-
-    elif args.dataset == 'bitcoin_alpha':
-        # Example (Alpha):
-        preprocess_bitcoin_csv("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/csvs/soc-sign-bitcoinalpha.csv", "/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_alpha_stream.npz", use_sign_label=False, val_ratio=0.15, test_ratio=0.15)
-
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_alpha_stream.npz", split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_alpha_stream.npz", split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_alpha_stream.npz", split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        print(f"[*] Loaded data from /Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/bitcoin_alpha_stream.npz with {num_nodes} nodes")
-
-    elif args.dataset == 'wiki_rfa':
-        preprocess_wikirfa_gz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/gzs/wiki-RfA.txt.gz", "/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/wiki_rfa.npz", val_ratio=0.15, test_ratio=0.15, drop_neutral=True)
-
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/wiki_rfa.npz", split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/wiki_rfa.npz", split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/wiki_rfa.npz", split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        print(f"[*] Loaded data from /Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/wiki_rfa.npz with {num_nodes} nodes")
-
-    elif args.dataset == 'epinions_ratings':
-        preprocess_epinions_ratings_zip("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/zips/epinions_with_rating_timestamp_txt.zip", "/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/epinions_ratings.npz", val_ratio=0.15, test_ratio=0.15, as_regression=True, min_events_item=1, min_events_user=1)
-
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/epinions_ratings.npz", split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/epinions_ratings.npz", split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz("/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/epinions_ratings.npz", split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
-
-        print(f"[*] Loaded data from /Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/epinions_ratings.npz with {num_nodes} nodes")
 
     elif args.dataset in ['reddit', 'mooc', 'wikipedia']:
         preprocess_temporal_csv(
-            f"/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/csvs/{args.dataset}.csv", 
-            f"/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/{args.dataset}_stream.npz", 
+            str(PROJECT_ROOT / f"tgap/data/csvs/{args.dataset}.csv"), 
+            str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), 
             args.dataset,
             val_ratio=0.15, 
             test_ratio=0.15,
             drop_hod_dow=True
         )
         
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(f"/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/{args.dataset}_stream.npz", split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
 
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz(f"/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/{args.dataset}_stream.npz", split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
 
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(f"/Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/{args.dataset}_stream.npz", split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
 
-        print(f"[*] Loaded data from /Users/franciscosilva/Documents/Projects/no-time-to-backprop/tgap/data/npzs/{args.dataset}_stream.npz with {num_nodes} nodes")
+        print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'} with {num_nodes} nodes")
 
     # define model and optimizer
     if architecture == 'ZUC':

@@ -3,9 +3,6 @@
 _linux_venv_do_not_use
 __pycache__
 tgap/data/csvs
-tgap/data/gzs
-tgap/data/zips
-tgap/data/npzs
 results_from_bravo
 results_extra
 results_for_fixing_cossim
