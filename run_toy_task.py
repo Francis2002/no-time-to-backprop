@@ -34,7 +34,7 @@ from tgap.utils import print_tree_keys
 
 import optuna
 
-#jax.config.update('jax_disable_jit', True)
+jax.config.update('jax_disable_jit', True)
 
 parser = argparse.ArgumentParser('Truncation Gap on Toy Data')
 parser.add_argument('-m', '--method', type=str, choices=['FBPTT', 'TBPTT', 'ONLINE', 'SPATIAL', 'ALL0'], help='Method name (FBPTT or TBPTT or ONLINE or SPATIAL)')
@@ -336,7 +336,11 @@ def make_model_step(model, num_nodes, mode="training"):
 
     def step_model(params, states, edge, rng_model=None):
         src, dst, feature, target = edge
-        nodes = jnp.array((src, dst))
+        if args.batch_size != 0:
+            # interleave: [src0,dst0, src1,dst1, ...]
+            nodes = jnp.stack([src, dst], axis=1).reshape(-1)
+        else:
+            nodes = jnp.array((src, dst))
 
         # jax.debug.print("Step model with params: {params}",
         #                 params=params)
@@ -429,8 +433,6 @@ def make_model_step(model, num_nodes, mode="training"):
         # Reshape back to what the state store expects
         if args.batch_size != 0:
             new_batch_states = jax.tree_util.tree_map(lambda x: x.reshape((args.batch_size * 2, -1)), new_batch_states)
-
-            nodes = nodes.reshape((args.batch_size * 2, ))
 
         states = set_state(states, nodes, new_batch_states)
 
