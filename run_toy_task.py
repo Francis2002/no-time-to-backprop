@@ -34,7 +34,7 @@ from tgap.utils import print_tree_keys
 
 import optuna
 
-jax.config.update('jax_disable_jit', True)
+#jax.config.update('jax_disable_jit', True)
 
 parser = argparse.ArgumentParser('Truncation Gap on Toy Data')
 parser.add_argument('-m', '--method', type=str, choices=['FBPTT', 'TBPTT', 'ONLINE', 'SPATIAL', 'ALL0'], help='Method name (FBPTT or TBPTT or ONLINE or SPATIAL)')
