@@ -71,14 +71,11 @@ parser.add_argument('--num_gradient_accumulation_steps', type=int, default=1, he
 
 # ---------------------------------------------------- LR Scheduling ----------------------------------------------------
 
-parser.add_argument('--steps_for_scheduler', type=int, default=20, help='Number of steps for the LR scheduler (default: 20)')
+parser.add_argument('--steps_for_scheduler', type=int, default=0, help='Number of steps for the LR scheduler (default: 0, meaning until the end of training)')
 parser.add_argument('--lr_schedule', type=str, default='constant', choices=['cosine','linear_warmup','constant'])
-parser.add_argument('--rec_lr_schedule', type=str, default='constant', choices=['cosine','linear_warmup','constant'])
-parser.add_argument('--use_plateau', action='store_true', help='Enable ReduceLROnPlateau on top of the base schedule')
-parser.add_argument('--plateau_factor', type=float, default=0.2)
-parser.add_argument('--plateau_patience', type=int, default=20)
 parser.add_argument('--lr_min', type=float, default=1e-6)
-parser.add_argument('--rec_learning_rate', type=float, default=None, help='If None, use learning_rate for rec too')
+parser.add_argument('--rec_learning_factor', type=float, default=1.0, help='Factor to multiply learning rate for to get lr for recurrent parameters')
+parser.add_argument('--warmup_frac', type=float, default=0.05, help='Fraction of steps to warmup for')
 
 # ------------------------------------------------------- Optuna ----------------------------------------------------
 
@@ -621,6 +618,15 @@ for iter_num, item in enumerate(hpt_samples):
         init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
 
         print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'} with {num_nodes} nodes")
+
+    # Get steps for scheduler
+    batches_per_epoch = num_steps
+    if args.acc:
+        updates_per_epoch = 1
+    else:
+        updates_per_epoch = math.ceil(batches_per_epoch / args.num_gradient_accumulation_steps)
+    if args.steps_for_scheduler == 0:
+        args.steps_for_scheduler = updates_per_epoch * args.num_epochs
 
     # define model and optimizer
     if architecture == 'ZUC':

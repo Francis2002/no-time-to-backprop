@@ -1,25 +1,6 @@
 import jax
 import jax.numpy as jnp
 
-# --- Plateau learning rate reducer -------------------------------------------
-
-def reduce_lr_on_plateau(input, factor=0.2, patience=20, lr_min=1e-6):
-    lr, rec_lr, count, new_loss, opt_loss = input
-    if new_loss < opt_loss:
-        count = 0
-        opt_loss = new_loss
-    else:
-        count += 1
-    if count > patience:
-        lr = factor * lr
-        rec_lr = factor * rec_lr
-        count = 0
-    if lr < lr_min:
-        lr = lr_min
-    if rec_lr < lr_min:
-        rec_lr = lr_min
-    return (lr, rec_lr, count,)
-
 # --- Schedules ---------------------------------------------------------------
 def linear_warmup(step, base_lr, end_step, lr_min=None):
     return base_lr * (step + 1) / max(1, end_step)
@@ -32,18 +13,26 @@ def cosine_annealing(step, base_lr, end_step, lr_min=1e-6):
 def constant_lr(step, base_lr, end_step, lr_min=None):
     return base_lr
 
-def make_schedule(kind: str, base_lr: float, end_step: int, lr_min: float = 1e-6):
+def make_schedule(kind: str, base_lr: float, end_step: int, lr_min: float = 1e-6, warmup_steps: int = 0):
     if kind == "cosine":
         return lambda step: cosine_annealing(step, base_lr, end_step, lr_min)
     elif kind == "linear_warmup":
         return lambda step: linear_warmup(step, base_lr, end_step)
     elif kind == "constant":
         return lambda step: constant_lr(step, base_lr, end_step)
+    elif kind == "warmup_cosine":
+        return optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=base_lr,
+            warmup_steps=warmup_steps,
+            decay_steps=end_step,
+            end_value=lr_min,
+        )
     else:
         raise ValueError(f"Unknown schedule kind: {kind}")
 
 # --- Param labeling for multi_transform -------------------------------------
-RECURRENT_LEAF_NAMES = {"nu", "theta", "gamma_log", "B_re", "B_im"}  # recurrent, no WD
+RECURRENT_LEAF_NAMES = {"nu", "theta", "gamma_log", "B_re", "B_im"}  # recurrent, no WD and rec_base_lr
 # Everything else (encoder/decoder, C_re/C_im, D, GLU/Norm, etc.) -> weight decay.
 
 def map_nested_fn(fn):
@@ -101,13 +90,14 @@ import optax
 def create_optimizer(args, hpt):
 
     reg_base_lr = float(hpt['learning_rate'])
-    rec_base_lr = float(args.rec_learning_rate) if args.rec_learning_rate is not None else reg_base_lr
+    rec_base_lr = float(hpt['learning_rate']) * float(args.rec_learning_factor)
     wd = float(hpt['weight_decay'])
     b1, b2 = float(hpt['beta1']), float(hpt['beta2'])
 
     # Learning-rate schedules (no manual state)
-    reg_schedule = make_schedule(args.lr_schedule, reg_base_lr, args.steps_for_scheduler, args.lr_min)
-    rec_schedule = make_schedule(args.rec_lr_schedule, rec_base_lr, args.steps_for_scheduler, args.lr_min)
+    warmup_steps = int(args.steps_for_scheduler * args.warmup_frac)
+    reg_schedule = make_schedule(args.lr_schedule, reg_base_lr, args.steps_for_scheduler, args.lr_min, warmup_steps)
+    rec_schedule = make_schedule(args.lr_schedule, rec_base_lr, args.steps_for_scheduler, args.lr_min, warmup_steps)
 
     # group transforms
     rec_tx    = optax.adam(  learning_rate=rec_schedule, b1=b1, b2=b2)              # no WD
@@ -130,6 +120,6 @@ def create_optimizer(args, hpt):
     )
     # Gradient accumulation if you want to keep it
     if not args.acc:
-        tx = optax.MultiSteps(tx, every_k_schedule=args.num_gradient_accumulation_steps)
+        tx = optax.MultiSteps(tx, every_k_schedule=args.num_gradient_accumulation_steps, use_grad_mean=True)
 
     return tx
