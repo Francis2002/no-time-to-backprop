@@ -72,7 +72,7 @@ parser.add_argument('--num_gradient_accumulation_steps', type=int, default=1, he
 # ---------------------------------------------------- LR Scheduling ----------------------------------------------------
 
 parser.add_argument('--steps_for_scheduler', type=int, default=0, help='Number of steps for the LR scheduler (default: 0, meaning until the end of training)')
-parser.add_argument('--lr_schedule', type=str, default='constant', choices=['cosine','linear_warmup','constant'])
+parser.add_argument('--lr_schedule', type=str, default='warmup_cosine', choices=['cosine','linear_warmup','constant','warmup_cosine'])
 parser.add_argument('--lr_min', type=float, default=1e-6)
 parser.add_argument('--rec_learning_factor', type=float, default=1.0, help='Factor to multiply learning rate for to get lr for recurrent parameters')
 parser.add_argument('--warmup_frac', type=float, default=0.05, help='Fraction of steps to warmup for')
