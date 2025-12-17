@@ -28,6 +28,7 @@ import os
 from tgap.data.sampler_stream import get_stream_sampler_from_npz
 from tgap.data.preprocessers.preprocess_kumar_temporal import preprocess_temporal_csv
 import sys
+import math
 
 from tgap.lr_scheduling import create_optimizer, count_params
 from tgap.utils import print_tree_keys
