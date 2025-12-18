@@ -29,6 +29,7 @@ from tgap.data.sampler_stream import get_stream_sampler_from_npz
 from tgap.data.preprocessers.preprocess_kumar_temporal import preprocess_temporal_csv
 import sys
 import math
+import operator
 
 from tgap.lr_scheduling import create_optimizer, count_params
 from tgap.utils import print_tree_keys
@@ -650,8 +651,12 @@ for iter_num, item in enumerate(hpt_samples):
 
         init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
 
-        print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'} with {num_nodes} nodes")
-
+        print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'}")
+        print(f"[*] Number of nodes: {num_nodes}")
+        print(f"[*] Total number of edges: {num_steps + num_val_steps + num_test_steps}")
+        print(f"[*] Val_ratio: {0.15 if args.dataset != 'mooc' else 0.2} | Test_ratio: {0.15 if args.dataset != 'mooc' else 0.2}")
+        print(f"[*] Number of features: {feature_size}")
+        
     # Get steps for scheduler
     batches_per_epoch = num_steps
     if args.acc:
@@ -923,6 +928,8 @@ for iter_num, item in enumerate(hpt_samples):
     lambdas = []
     all_grads = []
     cosine_history = []
+    best_val_loss = float('inf')
+    best_test_loss = float('inf')
     best_val_roc_auc = 0.0
     best_test_roc_auc = 0.0
     best_val_epoch = -1
@@ -990,18 +997,29 @@ for iter_num, item in enumerate(hpt_samples):
                 val_losses.append(float(val_bce))
                 val_metrics_history.append(val_metrics)
 
-                if val_metrics['roc_auc'] > best_val_roc_auc: # Improved
+                if args.early_stop_metric == 'AUC':
+                    current_val_metric = val_metrics['roc_auc']
+                    best_val_metric = best_val_roc_auc
+                    comparison_function = operator.gt   # For AUC bigger is better
+                else:
+                    current_val_metric = val_metrics['loss']
+                    best_val_metric = best_val_loss
+                    comparison_function = operator.lt   # For loss smaller is better
+                
+                if comparison_function(current_val_metric, best_val_metric): # Improved
 
-                    if val_metrics['roc_auc'] - best_val_roc_auc > args.min_delta: # Improved by more than min_delta
+                    if comparison_function(current_val_metric - best_val_metric, args.min_delta): # Improved by more than min_delta
                         early_stop_counter = 0
                     else:
                         early_stop_counter += 1
 
+                    best_val_loss = val_bce
                     best_val_roc_auc = val_metrics['roc_auc']
                     best_val_epoch = epoch
                     best_params = params
                 else:
                     early_stop_counter += 1
+
             else:
                 if print_condition:
                     print(f"[*] Val Loss: {val_loss}")
@@ -1072,6 +1090,10 @@ for iter_num, item in enumerate(hpt_samples):
         # No need for init_model() because model_state is never updated here, and thus is always all 0s
 
         if print_condition and args.dataset not in ['toy']:
+            if args.early_stop_metric == 'loss':
+                print(f"[*] Best val loss: {best_val_loss}")
+            if early_stop_counter > 0:
+                print(f"[*] Early stopping in {args.early_stop_patience - early_stop_counter} epochs")
             print(f"[*] Best Val ROC AUC: {best_val_roc_auc} at epoch {best_val_epoch + 1}")
             print(f"[*] Best Test ROC AUC: {best_test_roc_auc} at epoch {best_test_epoch + 1}")
             print("-----------------------------------------------------")
