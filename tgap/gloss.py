@@ -148,6 +148,14 @@ def MLP(
 
 def bce(scale_pos_weight = 1, reduction=jnp.mean):
     def loss(logits, targets):
+
+        # If there are masks, they come in the targets as (y, mask)
+        if isinstance(targets, (tuple, list)) and len(targets) == 2:
+            targets, mask = targets
+            mask = mask.astype(logits.dtype)
+        else:
+            mask = None
+
         abs_logits = jnp.abs(logits)
         losses = jnp.log1p(jnp.exp(-abs_logits))
 
@@ -156,6 +164,9 @@ def bce(scale_pos_weight = 1, reduction=jnp.mean):
         losses += jnp.maximum(0, margin)
         if scale_pos_weight != 1:
             losses *= jnp.where(targets, scale_pos_weight, 1)
+        if mask is not None:
+            den = jnp.sum(mask) + 1e-8
+            losses *= mask / den
         return reduction(losses)
 
     return loss
@@ -184,11 +195,22 @@ def metrics_fake_loss(loss_fn):
 
         # 2) return the raw batch logits and targets so we can concatenate later
         # (No need to "copy" in JAX; returning the arrays is fine.)
-        return loss_batch, (jnp.asarray(logits), jnp.asarray(targets))
+        # If there are masks, they come in the targets as (y, mask)
+        if isinstance(targets, (tuple, list)) and len(targets) == 2:
+            targets, mask = targets
+            mask = mask.astype(logits.dtype)
+            return loss_batch, (jnp.asarray(logits), jnp.asarray(targets), mask)
+        else:
+            return loss_batch, (jnp.asarray(logits), jnp.asarray(targets))
     
     return metrics_fake_loss_function
 
-def compute_metrics_from_logits(all_logits, all_targets, print_stuff=False, trained_with_mse=False):
+def compute_metrics_from_logits(all_logits, all_targets, print_stuff=False, trained_with_mse=False, all_masks=None):
+    if all_masks is not None:
+        print("[*] Filtering out padded slots")
+        print("[*] Fraction of real samples:", 1 - float(jnp.mean(all_masks)))
+        all_logits = all_logits[all_masks > 0]
+        all_targets = all_targets[all_masks > 0]
     all_logits, all_targets = _flatten_binary(all_logits, all_targets)
 
     all_labels = all_targets.astype(jnp.int32)

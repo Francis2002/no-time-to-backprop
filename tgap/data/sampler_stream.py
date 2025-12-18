@@ -13,6 +13,62 @@ def _ensure_2d(x: jnp.ndarray) -> jnp.ndarray:
         return x[:, None]
     return x
 
+def _build_tbatch_minibatches_np(
+    src: np.ndarray,
+    dst: np.ndarray,
+    perm: np.ndarray,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    JODIE t-Batch assignment (linear time), then chunk into fixed-size minibatches.
+
+    Returns:
+      batches_idx: int32 [num_minibatches, B]  (indices into original stream)
+      batches_msk: float32 [num_minibatches, B] (1.0 real, 0.0 padding)
+    """
+    B = int(batch_size)
+    assert B > 0
+    N = int(perm.shape[0])
+
+    # infer number of nodes from ids present (robust even if num_nodes passed separately)
+    n_nodes = int(max(src.max(), dst.max())) + 1
+    last = np.zeros((n_nodes,), dtype=np.int32)
+
+    buckets: list[list[int]] = []  # buckets[k-1] stores batch k
+    # Iterate in temporal order given by perm
+    for idx in perm.tolist():
+        u = int(src[idx]); v = int(dst[idx])
+        k = int(max(last[u], last[v]) + 1)
+        last[u] = k
+        last[v] = k
+        while len(buckets) < k:
+            buckets.append([])
+        buckets[k-1].append(int(idx))
+
+    minibatches: list[np.ndarray] = []
+    masks: list[np.ndarray] = []
+
+    for edges in buckets:
+        if len(edges) == 0:
+            continue
+        edges = np.asarray(edges, dtype=np.int32)
+        # chunk
+        for start in range(0, len(edges), B):
+            chunk = edges[start:start+B]
+            m = np.ones((chunk.shape[0],), dtype=np.float32)
+            if chunk.shape[0] < B:
+                pad = B - chunk.shape[0]
+                # pad indices with a valid index (we'll mask them out anyway)
+                chunk = np.concatenate([chunk, np.full((pad,), chunk[0], dtype=np.int32)], axis=0)
+                m = np.concatenate([m, np.zeros((pad,), dtype=np.float32)], axis=0)
+            minibatches.append(chunk)
+            masks.append(m)
+
+    if len(minibatches) == 0:
+        return np.zeros((0, B), dtype=np.int32), np.zeros((0, B), dtype=np.float32)
+
+    return np.stack(minibatches, axis=0), np.stack(masks, axis=0)
+
 
 def _build_rearranged_batches_np(
     src: np.ndarray,
@@ -151,8 +207,10 @@ def get_stream_sampler_from_arrays(
     N_eff = (N // B) * B
     num_batches = N_eff // B
 
-    if batching_strategy not in ("none", "rearranged"):
+    if batching_strategy not in ("none", "rearranged", "tbatch"):
         raise ValueError(f"Unknown batching_strategy={batching_strategy}")
+    
+    sentinel = np.int32(num_nodes)  # assumes real nodes are [0..num_nodes-1]
 
     # Precompute the epoch order once, capture in closure.
     # For temporal graphs you likely want shuffle_each_epoch=False,
@@ -192,50 +250,117 @@ def get_stream_sampler_from_arrays(
 
         return init, step, num_nodes, num_batches, Df, Dt
 
-    # batching_strategy == "rearranged"
-    # Build batches ONCE in Python/NumPy to avoid per-epoch overhead.
-    src_np = np.asarray(jax.device_get(src))
-    dst_np = np.asarray(jax.device_get(dst))
-    perm_np = np.arange(N_eff, dtype=np.int32)
+    if batching_strategy == "rearranged":
+        # Build batches ONCE in Python/NumPy to avoid per-epoch overhead.
+        src_np = np.asarray(jax.device_get(src))
+        dst_np = np.asarray(jax.device_get(dst))
+        perm_np = np.arange(N_eff, dtype=np.int32)
 
-    batches_np = _build_rearranged_batches_np(
-        src_np, dst_np, perm_np, B, window_mult=window_mult
-    )  # [num_batches, B]
-    batches = jnp.asarray(batches_np)  # captured in closure
+        batches_np = _build_rearranged_batches_np(
+            src_np, dst_np, perm_np, B, window_mult=window_mult
+        )  # [num_batches, B]
+        batches = jnp.asarray(batches_np)  # captured in closure
 
-    def init(rng):
-        return ((batches, jnp.int32(0)), rng)
+        def init(rng):
+            return ((batches, jnp.int32(0)), rng)
 
-    @jax.jit
-    def step(state, _=None):
-        (batches_local, bidx), rng = state
+        @jax.jit
+        def step(state, _=None):
+            (batches_local, bidx), rng = state
 
-        sl = batches_local[bidx]  # [B]
-        ev = (src[sl], dst[sl], feat[sl, :], target[sl, :])
+            sl = batches_local[bidx]  # [B]
+            ev = (src[sl], dst[sl], feat[sl, :], target[sl, :])
 
-        bidx_next = bidx + jnp.int32(1)
-        wrapped = bidx_next >= batches_local.shape[0]
+            bidx_next = bidx + jnp.int32(1)
+            wrapped = bidx_next >= batches_local.shape[0]
 
-        def do_wrap(args):
-            _batches, _rng = args
-            if shuffle_each_epoch:
-                _rng, prng = jax.random.split(_rng)
-                order = jax.random.permutation(prng, _batches.shape[0])
-                _batches = _batches[order]
-            return (_batches, jnp.int32(0)), _rng
+            def do_wrap(args):
+                _batches, _rng = args
+                if shuffle_each_epoch:
+                    _rng, prng = jax.random.split(_rng)
+                    order = jax.random.permutation(prng, _batches.shape[0])
+                    _batches = _batches[order]
+                return (_batches, jnp.int32(0)), _rng
 
-        def no_wrap(args):
-            _batches, _rng = args
-            return (_batches, bidx_next), _rng
+            def no_wrap(args):
+                _batches, _rng = args
+                return (_batches, bidx_next), _rng
 
-        (batches_next, bidx_next), rng_next = jax.lax.cond(
-            wrapped & jnp.array(loop),
-            do_wrap, no_wrap, operand=(batches_local, rng)
-        )
+            (batches_next, bidx_next), rng_next = jax.lax.cond(
+                wrapped & jnp.array(loop),
+                do_wrap, no_wrap, operand=(batches_local, rng)
+            )
 
-        return ((batches_next, bidx_next), rng_next), ev
+            return ((batches_next, bidx_next), rng_next), ev
 
-    return init, step, num_nodes, int(batches_np.shape[0]), Df, Dt
+        return init, step, num_nodes, int(batches_np.shape[0]), Df, Dt
+
+    if batching_strategy == "tbatch":
+        # Build tbatch minibatches ONCE in Python/NumPy
+        src_np = np.asarray(jax.device_get(src))
+        dst_np = np.asarray(jax.device_get(dst))
+        feat_np = np.asarray(jax.device_get(feat))
+        target_np = np.asarray(jax.device_get(target))
+
+        perm_np = np.arange(N, dtype=np.int32)  # IMPORTANT: use all edges in split (no N_eff drop)
+        batches_idx_np, batches_msk_np = _build_tbatch_minibatches_np(src_np, dst_np, perm_np, B)
+
+        batches_idx = jnp.asarray(batches_idx_np)  # [Nb, B]
+        batches_msk = jnp.asarray(batches_msk_np)  # [Nb, B] float32
+
+        num_batches = int(batches_idx_np.shape[0])
+
+        # constants for padding payload
+        zero_feat = jnp.zeros((Df,), dtype=feat.dtype)
+        zero_tgt = jnp.zeros((Dt,), dtype=target.dtype)
+
+        def init(rng):
+            return ((batches_idx, batches_msk, jnp.int32(0)), rng)
+
+        @jax.jit
+        def step(state, _=None):
+            (idx_mat, msk_mat, bidx), rng = state
+
+            sl = idx_mat[bidx]  # [B]
+            m  = msk_mat[bidx]  # [B] in {0,1}
+
+            s = src[sl]
+            d = dst[sl]
+            x = feat[sl, :]
+            y = target[sl, :]
+
+            # For padded slots (m==0): route to sentinel and zero payload
+            m_bool = m > 0.5
+            s = jnp.where(m_bool, s, jnp.int32(sentinel))
+            d = jnp.where(m_bool, d, jnp.int32(sentinel))
+
+            # broadcast masking for feat/target
+            x = jnp.where(m_bool[:, None], x, zero_feat[None, :])
+            y = jnp.where(m_bool[:, None], y, zero_tgt[None, :])
+
+            # Here we return target as a tuple (labels, mask) so the loss can mask cleanly
+            ev = (s, d, x, (y, m))
+
+            bidx_next = bidx + jnp.int32(1)
+            wrapped = bidx_next >= idx_mat.shape[0]
+
+            def do_wrap(args):
+                _idx, _msk, _rng = args
+                # For temporal graphs you should not shuffle tbatches.
+                return (_idx, _msk, jnp.int32(0)), _rng
+
+            def no_wrap(args):
+                _idx, _msk, _rng = args
+                return (_idx, _msk, bidx_next), _rng
+
+            (idx_next, msk_next, bidx_next), rng_next = jax.lax.cond(
+                wrapped & jnp.array(loop),
+                do_wrap, no_wrap, operand=(idx_mat, msk_mat, rng)
+            )
+
+            return ((idx_next, msk_next, bidx_next), rng_next), ev
+
+        return init, step, num_nodes + 1, num_batches, Df, Dt
 
 
 def get_stream_sampler_from_npz(
