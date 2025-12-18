@@ -57,6 +57,7 @@ parser.add_argument('--num_epochs', type=int, default=5000, help='Number of epoc
 
 parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
 parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
+parser.add_argument('--drop_hod_dow', action='store_true', help='Drop HOD and DOW from the features (benchmarks only)')
 
 parser.add_argument('--early_stop_patience', type=int, default=25, help='Number of epochs to wait before early stopping')
 parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum change in the metric to consider it an improvement')
@@ -642,7 +643,7 @@ for iter_num, item in enumerate(hpt_samples):
             args.dataset,
             val_ratio=0.15 if args.dataset != 'mooc' else 0.2, 
             test_ratio=0.15 if args.dataset != 'mooc' else 0.2,
-            drop_hod_dow=True
+            drop_hod_dow=args.drop_hod_dow
         )
         
         init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
@@ -654,7 +655,12 @@ for iter_num, item in enumerate(hpt_samples):
         print(f"\n[*] -------------------- Dataset Statistics --------------------")
         print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'}")
         print(f"[*] Number of nodes: {num_nodes}")
-        print(f"[*] Total number of edges: {num_steps + num_val_steps + num_test_steps}")
+        total_steps = num_steps + num_val_steps + num_test_steps
+        if args.batch_size != 0:
+            total_edges = total_steps * args.batch_size
+        else:
+            total_edges = total_steps
+        print(f"[*] Total number of edges used: {total_edges}")
         print(f"[*] Val_ratio: {0.15 if args.dataset != 'mooc' else 0.2} | Test_ratio: {0.15 if args.dataset != 'mooc' else 0.2}")
         print(f"[*] Number of features: {feature_size}")
         print(f"[*] -----------------------------------------------------------\n")
@@ -1016,12 +1022,16 @@ for iter_num, item in enumerate(hpt_samples):
                     else:
                         early_stop_counter += 1
 
-                    best_val_loss = val_bce
-                    best_val_roc_auc = val_metrics['roc_auc']
                     if args.early_stop_metric == 'loss':
+                        best_val_loss = val_bce
                         best_val_loss_epoch = epoch
-                    best_val_epoch = epoch # this is the best epoch for AUC always, even if AUC is not the one used for early stopping
-                    best_params = params
+                    
+                    if val_metrics['roc_auc'] > best_val_roc_auc:   # AUC is the de facto metric for determining what is "best", 
+                                                                    # so we wan tto track this. 
+                                                                    # Only for early stopping do we (maybe) use the loss
+                        best_val_roc_auc = val_metrics['roc_auc']
+                        best_val_epoch = epoch # this is the best epoch for AUC always, even if AUC is not the one used for early stopping
+                        best_params = params
                 else:
                     early_stop_counter += 1
 
