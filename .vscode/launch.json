@@ -36,13 +36,6 @@
                 "--num_nodes", "3",
                 "--equal_dmodel",
                 "--dont_store_results",
-                "--steps_for_scheduler", "20",
-                "--lr_schedule", "cosine",
-                "--plateau_factor", "0.2",
-                "--plateau_patience", "20",
-                "--lr_min", "1e-6",
-                "--hpt", "grid",
-                "--n_trials", "20",
                 "--acc"
             ]
         },
@@ -77,13 +70,6 @@
                 "--num_steps", "1000",
                 "--num_nodes", "100",
                 "--double_dmodel",
-                "--steps_for_scheduler", "20",
-                "--lr_schedule", "cosine",
-                "--plateau_factor", "0.2",
-                "--plateau_patience", "20",
-                "--lr_min", "1e-6",
-                "--hpt", "grid",
-                "--n_trials", "20",
                 "--acc"
             ]
         },
@@ -158,14 +144,6 @@
                 "--dont_store_results",
                 "--dedupe",
                 "--num_gradient_accumulation_steps", "32",
-                "--steps_for_scheduler", "100",
-                "--lr_schedule", "cosine",
-                "--rec_lr_schedule", "cosine",
-                "--plateau_factor", "0.2",
-                "--plateau_patience", "20",
-                "--lr_min", "1e-6",
-                "--hpt", "grid",
-                "--n_trials", "20",
             ]
         },
         {

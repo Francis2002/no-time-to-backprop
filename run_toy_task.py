@@ -981,9 +981,18 @@ for iter_num, item in enumerate(hpt_samples):
                 val_losses.append(float(val_bce))
                 val_metrics_history.append(val_metrics)
 
-                if val_metrics['roc_auc'] > best_val_roc_auc:
+                if val_metrics['roc_auc'] > best_val_roc_auc: # Improved
+
+                    if best_val_roc_auc - val_metrics['roc_auc'] > args.min_delta: # Improved by more than min_delta
+                        early_stop_counter = 0
+                    else:
+                        early_stop_counter += 1
+
                     best_val_roc_auc = val_metrics['roc_auc']
                     best_val_epoch = epoch
+                    best_params = params
+                else:
+                    early_stop_counter += 1
             else:
                 if print_condition:
                     print(f"[*] Val Loss: {val_loss}")
@@ -1058,19 +1067,11 @@ for iter_num, item in enumerate(hpt_samples):
             print(f"[*] Best Test ROC AUC: {best_test_roc_auc} at epoch {best_test_epoch + 1}")
             print("-----------------------------------------------------")
         
-        if best_val_roc_auc == val_metrics['roc_auc']: # Improved
-            best_params = params
-            if best_val_roc_auc - val_metrics['roc_auc'] > args.min_delta: # Improved by more than min_delta
-                early_stop_counter = 0
-            else:
-                early_stop_counter += 1
-        else:
-            early_stop_counter += 1
-
-        if early_stop_counter >= args.early_stop_patience:
-            if print_condition:
-                print("[*] Early stopping")
-            break
+        if args.task == 'link_classification':
+            if early_stop_counter >= args.early_stop_patience:
+                if print_condition:
+                    print("[*] Early stopping")
+                break
 
     losses = np.array(losses)
 

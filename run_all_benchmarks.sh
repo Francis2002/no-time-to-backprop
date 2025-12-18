@@ -94,10 +94,6 @@ for dataset in "${datasets[@]}"; do
                               --num_epochs 200 \
                               --num_gradient_accumulation_steps 32 \
                               --dedupe \
-                              --steps_for_scheduler 100 \
-                              --lr_schedule cosine \
-                              --rec_lr_schedule cosine \
-                              --lr_min 1e-6 \
 
                             echo "Experiment number: $i completed"
                           done
