@@ -93,9 +93,25 @@ def preprocess_temporal_csv(
     
     # Check if output file already exists
     if Path(out_npz).exists():
-        print(f"[*] Output file {out_npz} already exists. Using existing file.")
-        return
-
+        try:
+            # Check meta. Only if meta also matches do we use the existing file.
+            with np.load(out_npz, allow_pickle=True) as data:
+                if 'meta' in data:
+                    meta = data['meta']
+                    if (len(meta) == 4 and 
+                        meta[0] == dataset_name and 
+                        np.isclose(float(meta[1]), val_ratio) and 
+                        np.isclose(float(meta[2]), test_ratio) and 
+                        bool(meta[3]) == drop_hod_dow):
+                        print(f"[*] Npz file {out_npz} already exists with matching meta. Using existing file.")
+                        return
+                    else:
+                        print(f"[!] Npz file {out_npz} already exists but with different meta. Overwriting.")
+                else:
+                    print(f"[!] Npz file {out_npz} exists but lacks metadata. Overwriting.")
+        except Exception as e:
+            print(f"[!] Error checking existing npz file: {e}. Re-generating.")
+    print(f"\n[*] ---------------------- Creating npz file ----------------------")
     print(f"[*] Loading data from {csv_path}...")
     # Load with header=None as the number of feature columns is variable
     # and the provided file may or may not have a header line.
@@ -203,7 +219,8 @@ def preprocess_temporal_csv(
         idx_train=idx_train,
         idx_val=idx_val,
         idx_test=idx_test,
-        meta=np.array([dataset_name.encode('utf-8')], dtype=object),
+        meta=np.array([dataset_name, val_ratio, test_ratio, drop_hod_dow], dtype=object)
     )
     print(f"[*] Saved {out_npz}  |  N={N}  nodes={num_nodes}  feat_dim={feat.shape[1]}")
     print(f"    train={len(idx_train)}  val={len(idx_val)}  test={len(idx_test)}")
+    print(f"[*] -------------------------------------------------------------------------\n")

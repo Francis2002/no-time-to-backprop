@@ -120,7 +120,7 @@ architecture = args.architecture.upper()
 NUM_EPOCHS = args.num_epochs
 
 RESULTS_BASE = ['results_for_rotational_vs_none', f'{args.dataset}_{method}']
-print(f"[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
+print(f"\n[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
 
 if args.dont_store_results:
     print("[*] NOT STORING RESULTS!!! to disk as per user request.")
@@ -622,7 +622,7 @@ for iter_num, item in enumerate(hpt_samples):
     else:
         trial, hpt = item
 
-    print('Running iteration:', iter_num)
+    print(f"\n[*] ----------------------------- Iteration: {iter_num} -----------------------------\n")
     memory = hpt['memory']
     state_size = hpt['state_size']
     
@@ -651,12 +651,14 @@ for iter_num, item in enumerate(hpt_samples):
 
         init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
 
+        print(f"\n[*] -------------------- Dataset Statistics --------------------")
         print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'}")
         print(f"[*] Number of nodes: {num_nodes}")
         print(f"[*] Total number of edges: {num_steps + num_val_steps + num_test_steps}")
         print(f"[*] Val_ratio: {0.15 if args.dataset != 'mooc' else 0.2} | Test_ratio: {0.15 if args.dataset != 'mooc' else 0.2}")
         print(f"[*] Number of features: {feature_size}")
-        
+        print(f"[*] -----------------------------------------------------------\n")
+
     # Get steps for scheduler
     batches_per_epoch = num_steps
     if args.acc:
@@ -932,6 +934,7 @@ for iter_num, item in enumerate(hpt_samples):
     best_test_loss = float('inf')
     best_val_roc_auc = 0.0
     best_test_roc_auc = 0.0
+    best_val_loss_epoch = -1
     best_val_epoch = -1
     best_test_epoch = -1
     early_stop_counter = 0
@@ -962,7 +965,7 @@ for iter_num, item in enumerate(hpt_samples):
         (params, optimizer_state, data_state, model_state_for_val, grads_for_debug), l = unrolled_episode(state)
         
         # only at last epoch, print the grads and model state for debugging
-        if epoch == NUM_EPOCHS - 1 and args.dont_store_results and (not (args.dataset in ['toy'] and args.num_epochs < 50) or (args.num_epochs == 1)):
+        if args.dataset in ['toy'] and epoch == NUM_EPOCHS - 1 and args.dont_store_results:
             print(f"[*] Epoch {epoch + 1} completed")
             print(f"[*] Loss: {l}")
             print(f"[*] grads_for_debug: {grads_for_debug}")
@@ -1002,7 +1005,7 @@ for iter_num, item in enumerate(hpt_samples):
                     best_val_metric = best_val_roc_auc
                     comparison_function = operator.gt   # For AUC bigger is better
                 else:
-                    current_val_metric = val_metrics['loss']
+                    current_val_metric = val_bce
                     best_val_metric = best_val_loss
                     comparison_function = operator.lt   # For loss smaller is better
                 
@@ -1015,7 +1018,9 @@ for iter_num, item in enumerate(hpt_samples):
 
                     best_val_loss = val_bce
                     best_val_roc_auc = val_metrics['roc_auc']
-                    best_val_epoch = epoch
+                    if args.early_stop_metric == 'loss':
+                        best_val_loss_epoch = epoch
+                    best_val_epoch = epoch # this is the best epoch for AUC always, even if AUC is not the one used for early stopping
                     best_params = params
                 else:
                     early_stop_counter += 1
@@ -1091,7 +1096,7 @@ for iter_num, item in enumerate(hpt_samples):
 
         if print_condition and args.dataset not in ['toy']:
             if args.early_stop_metric == 'loss':
-                print(f"[*] Best val loss: {best_val_loss}")
+                print(f"[*] Best val loss: {best_val_loss} at epoch {best_val_loss_epoch + 1}")
             if early_stop_counter > 0:
                 print(f"[*] Early stopping in {args.early_stop_patience - early_stop_counter} epochs")
             print(f"[*] Best Val ROC AUC: {best_val_roc_auc} at epoch {best_val_epoch + 1}")
