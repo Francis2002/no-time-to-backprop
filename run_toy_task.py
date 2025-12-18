@@ -40,21 +40,30 @@ import optuna
 parser = argparse.ArgumentParser('Truncation Gap on Toy Data')
 parser.add_argument('-m', '--method', type=str, choices=['FBPTT', 'TBPTT', 'ONLINE', 'SPATIAL', 'ALL0'], help='Method name (FBPTT or TBPTT or ONLINE or SPATIAL)')
 parser.add_argument('-a', '--architecture', type=str, choices=['GRU', 'LRU', 'MIN', 'ZUC'], help='Cell architecture (GRU or LRU)')
-parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
-parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
-parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
-parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-parser.add_argument('--batching_strategy', type=str, default='none', help='Batching strategy (none or rearranged)')
-parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
-parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay')
-parser.add_argument('--batch_size', type=int, default=0, help='Batch Size')
-parser.add_argument('--num_epochs', type=int, default=4000, help='Number of epochs')
+
+# ---------------------------------------------------- Toy task Specs ----------------------------------------------------
+
 parser.add_argument('--num_steps', type=int, default=750, help='Number of steps per epoch')
 parser.add_argument('--num_nodes', type=int, default=100, help='Number of nodes')
+parser.add_argument('--memory', type=int, default=2, help='Number of memory units')
+
+# ---------------------------------------------------- Training loop ----------------------------------------------------
+
+parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
+parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
+parser.add_argument('--num_epochs', type=int, default=4000, help='Number of epochs')
+
+parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
+parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
+
+# ---------------------------------------------------- Architecture choices ----------------------------------------------------
+
 parser.add_argument('--num_layers', type=int, default=2, help='Number of layers')
 parser.add_argument('--num_hidden', type=int, default=32, help='Number of hidden units')
 parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna')
-parser.add_argument('--memory', type=int, default=2, help='Number of memory units')
+parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
+parser.add_argument('--equal_dmodel', action='store_true', help='Use d_model = num_hidden (only for LRU and ZUC)')
+
 parser.add_argument('--activation', type=str, default='none', help='Activation function (tanh, sigmoid, gelu or full_glu or half_glu1 or half_glu2 or none)')
 parser.add_argument('--prenorm', action='store_true', help='Use prenormalization')
 parser.add_argument('--postnorm', action='store_true', help='Use postnormalization')
@@ -64,19 +73,30 @@ parser.add_argument('--extra_skip', action='store_true', help='Use extra skip co
 parser.add_argument('--decoder', type=str, default='MLP', help='Decoder type (MLP or NONE)')
 parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none, rotational)')
 parser.add_argument('--has_non_linearity_in_recurrence', action='store_true', help='Use non-linearity inside the recurrent cell (only for LRU and ZUC)')
-parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
-parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
-parser.add_argument('--equal_dmodel', action='store_true', help='Use d_model = num_hidden (only for LRU and ZUC)')
+
+# ---------------------------------------------------- Hyperparameters ----------------------------------------------------
+
+parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate')
+parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay')
 parser.add_argument('--acc', action='store_true', help='Accumulate gradients over the entire unrolled segment (for non-FBPTT methods)')
 parser.add_argument('--num_gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps (default: 1)')
 
 # ---------------------------------------------------- LR Scheduling ----------------------------------------------------
 
 parser.add_argument('--steps_for_scheduler', type=int, default=0, help='Number of steps for the LR scheduler (default: 0, meaning until the end of training)')
-parser.add_argument('--lr_schedule', type=str, default='warmup_cosine', choices=['cosine','linear_warmup','constant','warmup_cosine'])
+parser.add_argument('--lr_schedule', type=str, default='warmup_cosine', choices=['constant','warmup_cosine'])
 parser.add_argument('--lr_min', type=float, default=1e-6)
 parser.add_argument('--rec_learning_factor', type=float, default=1.0, help='Factor to multiply learning rate for to get lr for recurrent parameters')
-parser.add_argument('--warmup_frac', type=float, default=0.05, help='Fraction of steps to warmup for')
+parser.add_argument('--warmup_frac', type=float, default=0.05, help='Fraction of steps (of steps_for_scheduler) to warmup for')
+parser.add_argument('--early_stop_patience', type=int, default=10, help='Number of epochs to wait before early stopping')
+parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum change in the metric to consider it an improvement')
+
+# ---------------------------------------------------- Batching ----------------------------------------------------
+
+parser.add_argument('--batch_size', type=int, default=0, help='Batch Size (0 means pure streaming - no batching)')
+parser.add_argument('--batching_strategy', type=str, default='none', help='Batching strategy (none or rearranged)')
+parser.add_argument('--window_mult', type=float, default=10, help='For rearranged, we will look at the window_mult * batch_size interactions to look for collision-free combinations')
 
 # ------------------------------------------------------- Optuna ----------------------------------------------------
 
@@ -84,6 +104,8 @@ parser.add_argument('--hpt', type=str, choices=['grid', 'optuna'], default='grid
                     help='Use grid search (current behavior) or Optuna.')
 parser.add_argument('--n_trials', type=int, default=20,
                     help='Number of Optuna trials (ignored for grid).')
+
+# -------------------------------------------------------------------------------------------------------------------
 
 
 args = parser.parse_args()
@@ -612,11 +634,11 @@ for iter_num, item in enumerate(hpt_samples):
             drop_hod_dow=True
         )
         
-        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
 
-        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_val_data, val_step_data, _, num_val_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="val", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
 
-        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy)
+        init_test_data, test_step_data, _, num_test_steps, _, _ = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="test", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
 
         print(f"[*] Loaded data from {PROJECT_ROOT / f'tgap/data/npzs/{args.dataset}_stream.npz'} with {num_nodes} nodes")
 
@@ -897,6 +919,8 @@ for iter_num, item in enumerate(hpt_samples):
     best_test_roc_auc = 0.0
     best_val_epoch = -1
     best_test_epoch = -1
+    early_stop_counter = 0
+    best_params = params
     for epoch in range(NUM_EPOCHS):
 
         print_condition = epoch % 500 == 0 or (method in ['ONLINE', 'SPATIAL'] and num_steps*(args.batch_size + 1) > 1000 and epoch % 50 == 0)  or (args.dataset not in ['toy'] and epoch % 1 == 0) or (args.dataset in ['toy'] and args.num_epochs < 50 and epoch % 1 == 0)
@@ -1033,6 +1057,20 @@ for iter_num, item in enumerate(hpt_samples):
             print(f"[*] Best Val ROC AUC: {best_val_roc_auc} at epoch {best_val_epoch + 1}")
             print(f"[*] Best Test ROC AUC: {best_test_roc_auc} at epoch {best_test_epoch + 1}")
             print("-----------------------------------------------------")
+        
+        if best_val_roc_auc == val_metrics['roc_auc']: # Improved
+            best_params = params
+            if best_val_roc_auc - val_metrics['roc_auc'] > args.min_delta: # Improved by more than min_delta
+                early_stop_counter = 0
+            else:
+                early_stop_counter += 1
+        else:
+            early_stop_counter += 1
+
+        if early_stop_counter >= args.early_stop_patience:
+            if print_condition:
+                print("[*] Early stopping")
+            break
 
     losses = np.array(losses)
 

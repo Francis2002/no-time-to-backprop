@@ -2,23 +2,11 @@ import jax
 import jax.numpy as jnp
 
 # --- Schedules ---------------------------------------------------------------
-def linear_warmup(step, base_lr, end_step, lr_min=None):
-    return base_lr * (step + 1) / max(1, end_step)
-
-def cosine_annealing(step, base_lr, end_step, lr_min=1e-6):
-    count = jnp.minimum(step, end_step)
-    cosine_decay = 0.5 * (1 + jnp.cos(jnp.pi * count / jnp.maximum(1, end_step)))
-    return (base_lr - lr_min) * cosine_decay + lr_min
-
 def constant_lr(step, base_lr, end_step, lr_min=None):
     return base_lr
 
 def make_schedule(kind: str, base_lr: float, end_step: int, lr_min: float = 1e-6, warmup_steps: int = 0):
-    if kind == "cosine":
-        return lambda step: cosine_annealing(step, base_lr, end_step, lr_min)
-    elif kind == "linear_warmup":
-        return lambda step: linear_warmup(step, base_lr, end_step)
-    elif kind == "constant":
+    if kind == "constant":
         return lambda step: constant_lr(step, base_lr, end_step)
     elif kind == "warmup_cosine":
         return optax.warmup_cosine_decay_schedule(
