@@ -16,7 +16,7 @@ from pathlib import Path
 # Resolve project root from script location (works on Mac, Linux, Colab)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-from tgap.grnn import SymmetricGRUCell, MultiLayerLRUCellReal, SymmetricMinGRUCell, ZucchetCell
+from tgap.grnn import SymmetricGRUCell, ZucchetCell
 from tgap.gloss import bce, mse, MLP, with_loss, with_loss_without_mlp, with_feedforward_loss, with_feedforward_and_truncated_grads, metrics_fake_loss, compute_metrics_from_logits
 from tgap.memory import state_store, store_set_dedupe, store_get, memory_store
 from tgap.data.buffer_task import get_sampler_link_regression
@@ -39,39 +39,44 @@ import optuna
 
 parser = argparse.ArgumentParser('Truncation Gap on Toy Data')
 parser.add_argument('-m', '--method', type=str, choices=['FBPTT', 'TBPTT', 'ONLINE', 'SPATIAL', 'ALL0'], help='Method name (FBPTT or TBPTT or ONLINE or SPATIAL)')
-parser.add_argument('-a', '--architecture', type=str, choices=['GRU', 'LRU', 'MIN', 'ZUC'], help='Cell architecture (GRU or LRU)')
+parser.add_argument('-a', '--architecture', type=str, choices=['GRU', 'ZUC', 'LRU'], help='Cell architecture (GRU or ZUC or LRU)')
 
 # ---------------------------------------------------- Toy task Specs ----------------------------------------------------
 
-parser.add_argument('--num_steps', type=int, default=750, help='Number of steps per epoch')
+#These are only used for the toy task
+parser.add_argument('--num_steps', type=int, default=1000, help='Number of steps per epoch')
 parser.add_argument('--num_nodes', type=int, default=100, help='Number of nodes')
-parser.add_argument('--memory', type=int, default=2, help='Number of memory units')
+parser.add_argument('--memory', type=int, default=5, help='Memory level for the toy task')
 
 # ---------------------------------------------------- Training loop ----------------------------------------------------
 
 parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
 parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
-parser.add_argument('--num_epochs', type=int, default=4000, help='Number of epochs')
+parser.add_argument('--num_epochs', type=int, default=5000, help='Number of epochs (this default is for toy task)')
 
 parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
 parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
+
+parser.add_argument('--early_stop_patience', type=int, default=25, help='Number of epochs to wait before early stopping')
+parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum change in the metric to consider it an improvement')
+parser.add_argument('--early_stop_metric', type=str, default='loss', help='Metric to use for early stopping (loss, AUC)')
 
 # ---------------------------------------------------- Architecture choices ----------------------------------------------------
 
 parser.add_argument('--num_layers', type=int, default=2, help='Number of layers')
 parser.add_argument('--num_hidden', type=int, default=32, help='Number of hidden units')
-parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna')
+parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna (otherwise we calculate it)')
 parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
 parser.add_argument('--equal_dmodel', action='store_true', help='Use d_model = num_hidden (only for LRU and ZUC)')
 
-parser.add_argument('--activation', type=str, default='none', help='Activation function (tanh, sigmoid, gelu or full_glu or half_glu1 or half_glu2 or none)')
-parser.add_argument('--prenorm', action='store_true', help='Use prenormalization')
-parser.add_argument('--postnorm', action='store_true', help='Use postnormalization')
-parser.add_argument('--encoder', action='store_true', help='Use encoder')
-parser.add_argument('--layer_output', action='store_true', help='Use layer output')
-parser.add_argument('--extra_skip', action='store_true', help='Use extra skip connection')
+parser.add_argument('--activation', type=str, default='full_glu', help='Activation function (tanh, sigmoid, gelu or full_glu or half_glu1 or half_glu2 or none)')
+parser.add_argument('--remove_prenorm', action='store_true', help='Remove pre normalization')
+parser.add_argument('--postnorm', action='store_true', help='Use post normalization instead of pre normalization (the default)')
+parser.add_argument('--remove_encoder', action='store_true', help='Remove encoder')
+parser.add_argument('--remove_layer_output', action='store_true', help='Remove layer output')
+parser.add_argument('--remove_extra_skip', action='store_true', help='Remove extra skip connection')
 parser.add_argument('--decoder', type=str, default='MLP', help='Decoder type (MLP or NONE)')
-parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none, rotational)')
+parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none, rotational, rotational_full)')
 parser.add_argument('--has_non_linearity_in_recurrence', action='store_true', help='Use non-linearity inside the recurrent cell (only for LRU and ZUC)')
 
 # ---------------------------------------------------- Hyperparameters ----------------------------------------------------
@@ -90,8 +95,6 @@ parser.add_argument('--lr_schedule', type=str, default='warmup_cosine', choices=
 parser.add_argument('--lr_min', type=float, default=1e-6)
 parser.add_argument('--rec_learning_factor', type=float, default=1.0, help='Factor to multiply learning rate for to get lr for recurrent parameters')
 parser.add_argument('--warmup_frac', type=float, default=0.05, help='Fraction of steps (of steps_for_scheduler) to warmup for')
-parser.add_argument('--early_stop_patience', type=int, default=10, help='Number of epochs to wait before early stopping')
-parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum change in the metric to consider it an improvement')
 
 # ---------------------------------------------------- Batching ----------------------------------------------------
 
@@ -204,7 +207,7 @@ def _overall_vectors(grads, method, num_layers):
 
 
 # Edge case: If no layer_output, d_model must be 2 * hidden
-if not args.layer_output and architecture in ['LRU', 'ZUC']:
+if args.remove_layer_output and architecture in ['LRU', 'ZUC']:
     args.d_model = 2 * args.num_hidden
 else:
     if args.double_dmodel:
@@ -271,18 +274,24 @@ else:
     hpt_iter = optuna_iter()
 
 # Choose cell type based on method.
-if architecture == 'LRU':
-    CELL = MultiLayerLRUCellReal
-elif architecture == 'MIN':
-    CELL = SymmetricMinGRUCell
-elif architecture == 'ZUC':
+if architecture == 'ZUC':
     CELL = ZucchetCell
-else:
+elif architecture == 'LRU':
+    print("[*] Removing extra operations from stacked model")
+    args.remove_prenorm = True
+    args.remove_encoder = True
+    args.remove_extra_skip = True
+    args.activation = 'none'
+    args.mixing = 'none'
+    CELL = ZucchetCell  # LRU is a zucchet cell with only stacked recurrent cores (hidden state recurrence + layer output with C and D matrices + decoder head at the end of stack)
+elif architecture == 'GRU':
     CELL = SymmetricGRUCell
+else:
+    raise ValueError(f"Unknown architecture: {architecture}")
 
 def init_layer(layer_cls, **kwargs):
     if layer_cls == "LRU":
-        layer = LRU
+        layer = LRU                 # Recurrent cores are always LRUs, Zucchet vs LRU CELL just influences the stack
     return partial(layer, **kwargs)
 
 def make_model_step(model, num_nodes, mode="training"):
@@ -653,7 +662,7 @@ for iter_num, item in enumerate(hpt_samples):
         args.steps_for_scheduler = updates_per_epoch * args.num_epochs
 
     # define model and optimizer
-    if architecture == 'ZUC':
+    if architecture != 'GRU':
         aditional_arguments = {}
         aditional_arguments["r_min"] = 0
         aditional_arguments["r_max"] = 1.0
@@ -675,7 +684,7 @@ for iter_num, item in enumerate(hpt_samples):
             d_model=args.d_model,
             seq_length=1,
             training_mode=training_mode,
-            has_layer_output=args.layer_output,
+            has_layer_output=not args.remove_layer_output,
             mixing=args.mixing,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
@@ -686,9 +695,9 @@ for iter_num, item in enumerate(hpt_samples):
             d_model=args.d_model,
             seq_length=1,
             training_mode=training_mode,
-            has_layer_output=args.layer_output,
+            has_layer_output=not args.remove_layer_output,
             mixing=args.mixing,
-            d_in=feature_size if not args.encoder else None,
+            d_in=feature_size if args.remove_encoder else None,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
         )
@@ -712,7 +721,7 @@ for iter_num, item in enumerate(hpt_samples):
             training_mode=training_mode,
             has_layer_output=True,
             mixing=args.mixing,
-            d_in=feature_size if not args.encoder else None,
+            d_in=feature_size if args.remove_encoder else None,
             d_out=output_size if args.decoder == "NONE" else None, # if we have no decoder, then the last layer must project to output size
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
@@ -721,7 +730,7 @@ for iter_num, item in enumerate(hpt_samples):
             rec=rec,
             input_rec=input_rec,
             output_rec=output_rec if args.decoder == "NONE" else None, # if we have a decoder, then pass None here to skip output_rec creation
-            single_unique_rec=single_unique_rec if not args.encoder and args.decoder == "NONE" and args.num_layers == 1 else None, # if we have both no encoder and no decoder and only 1 layer, we use this special layer, else pass None here to skip single_unique_rec creation
+            single_unique_rec=single_unique_rec if args.remove_encoder and args.decoder == "NONE" and args.num_layers == 1 else None, # if we have both no encoder and no decoder and only 1 layer, we use this special layer, else pass None here to skip single_unique_rec creation
             rec_type='LRU',
             d_input=feature_size,
             d_output=output_size,
@@ -733,7 +742,7 @@ for iter_num, item in enumerate(hpt_samples):
             readout=0,
             dropout=args.dropout,
             mode='none',
-            prenorm=args.prenorm,
+            prenorm=not args.remove_prenorm,
             postnorm=args.postnorm,
             multidim=1,
             training=True,
@@ -741,9 +750,9 @@ for iter_num, item in enumerate(hpt_samples):
             d_hidden=state_size,
             in_dim=feature_size,
             bsz=args.batch_size if args.batch_size != 0 else None,
-            has_encoder=args.encoder,
+            has_encoder=not args.remove_encoder,
             decoder_type=args.decoder,
-            has_extra_skip=args.extra_skip,
+            has_extra_skip=not args.remove_extra_skip,
             mixing=args.mixing,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
         )
@@ -756,7 +765,7 @@ for iter_num, item in enumerate(hpt_samples):
             d_model=args.d_model,
             seq_length=1,
             training_mode='bptt',
-            has_layer_output=args.layer_output,
+            has_layer_output=not args.remove_layer_output,
             mixing=args.mixing,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
@@ -767,9 +776,9 @@ for iter_num, item in enumerate(hpt_samples):
             d_model=args.d_model,
             seq_length=1,
             training_mode='bptt',
-            has_layer_output=args.layer_output,
+            has_layer_output=not args.remove_layer_output,
             mixing=args.mixing,
-            d_in=feature_size if not args.encoder else None,
+            d_in=feature_size if args.remove_encoder else None,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
         )
@@ -793,7 +802,7 @@ for iter_num, item in enumerate(hpt_samples):
             training_mode='bptt',
             has_layer_output=True,
             mixing=args.mixing,
-            d_in=feature_size if not args.encoder else None,
+            d_in=feature_size if args.remove_encoder else None,
             d_out=output_size if args.decoder == "NONE" else None, # if we have no decoder, then the last layer must project to output size
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
             **aditional_arguments
@@ -802,7 +811,7 @@ for iter_num, item in enumerate(hpt_samples):
             rec=no_training_rec,
             input_rec=no_training_input_rec,
             output_rec=no_training_output_rec if args.decoder == "NONE" else None, # if we have a decoder, then pass None here to skip output_rec creation
-            single_unique_rec=no_training_single_unique_rec if not args.encoder and args.decoder == "NONE" and args.num_layers == 1 else None, # if we have both no encoder and no decoder and only 1 layer, we use this special layer, else pass None here to skip single_unique_rec creation
+            single_unique_rec=no_training_single_unique_rec if args.remove_encoder and args.decoder == "NONE" and args.num_layers == 1 else None, # if we have both no encoder and no decoder and only 1 layer, we use this special layer, else pass None here to skip single_unique_rec creation
             rec_type='LRU',
             d_input=feature_size,
             d_output=output_size,
@@ -814,7 +823,7 @@ for iter_num, item in enumerate(hpt_samples):
             readout=0,
             dropout=0.0,
             mode='none',
-            prenorm=args.prenorm,
+            prenorm=not args.remove_prenorm,
             postnorm=args.postnorm,
             multidim=1,
             training=False,
@@ -822,9 +831,9 @@ for iter_num, item in enumerate(hpt_samples):
             d_hidden=state_size,
             in_dim=feature_size,
             bsz=args.batch_size if args.batch_size != 0 else None,
-            has_encoder=args.encoder,
+            has_encoder=not args.remove_encoder,
             decoder_type=args.decoder,
-            has_extra_skip=args.extra_skip,
+            has_extra_skip=not args.remove_extra_skip,
             mixing=args.mixing,
             has_non_linearity_in_recurrence=args.has_non_linearity_in_recurrence,
         )
@@ -1083,7 +1092,7 @@ for iter_num, item in enumerate(hpt_samples):
         study.tell(trial, np.min(val_losses))
 
     general_config_sub_folder = f'memory_{memory}_hidden_{state_size}_layers_{args.num_layers}_act_{args.activation}'
-    flag_configuration_id = f'prenorm_{args.prenorm}_postnorm_{args.postnorm}_encoder_{args.encoder}_layerout_{args.layer_output}_extraskip_{args.extra_skip}_decoder_{args.decoder}_mixing_{args.mixing}_nonlinrec_{args.has_non_linearity_in_recurrence}_batchsize_{args.batch_size}_seed_{seed}'
+    flag_configuration_id = f'prenorm_{not args.remove_prenorm}_postnorm_{args.postnorm}_encoder_{not args.remove_encoder}_layerout_{not args.remove_layer_output}_extraskip_{not args.remove_extra_skip}_decoder_{args.decoder}_mixing_{args.mixing}_nonlinrec_{args.has_non_linearity_in_recurrence}_batchsize_{args.batch_size}_seed_{seed}'
 
     if args.dont_store_results:
         print("[*] Results storage disabled, skipping saving results to disk.")
@@ -1110,11 +1119,11 @@ for iter_num, item in enumerate(hpt_samples):
         'architecture': architecture,
         'method': method,
         'activation': args.activation,
-        'prenorm': args.prenorm,
+        'prenorm': not args.remove_prenorm,
         'postnorm': args.postnorm,
-        'encoder': args.encoder,
-        'layer_output': args.layer_output,
-        'extra_skip': args.extra_skip,
+        'encoder': not args.remove_encoder,
+        'layer_output': not args.remove_layer_output,
+        'extra_skip': not args.remove_extra_skip,
         'decoder': args.decoder,
         'mixing': args.mixing,
         'non_linearity_in_recurrence': args.has_non_linearity_in_recurrence,
