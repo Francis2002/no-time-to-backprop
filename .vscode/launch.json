@@ -143,7 +143,7 @@
                 "--dont_store_results",
                 "--dedupe",
                 "--num_gradient_accumulation_steps", "16",
-                "--batching_strategy", "tbatch"
+                "--batching_strategy", "none"
             ]
         },
         {

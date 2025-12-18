@@ -96,7 +96,7 @@ parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum chang
 # ---------------------------------------------------- Batching ----------------------------------------------------
 
 parser.add_argument('--batch_size', type=int, default=0, help='Batch Size (0 means pure streaming - no batching)')
-parser.add_argument('--batching_strategy', type=str, default='none', help='Batching strategy (none, tbatch or rearranged)')
+parser.add_argument('--batching_strategy', type=str, default='none', help='Batching strategy (none or rearranged)')
 parser.add_argument('--window_mult', type=float, default=10, help='For rearranged, we will look at the window_mult * batch_size interactions to look for collision-free combinations')
 
 # ------------------------------------------------------- Optuna ----------------------------------------------------
@@ -952,9 +952,8 @@ for iter_num, item in enumerate(hpt_samples):
             print(f"[*] grads_for_debug: {grads_for_debug}")
             print(f"[*] grads_for_cossim: {grads_for_cossim}")
 
-        if args.batching_strategy in ['none', 'rearranged']:
-            if print_condition:
-                print(f"[*] Training Loss: {l}")
+        if print_condition:
+            print(f"[*] Training Loss: {l}")
 
         losses.append(float(l))
 
@@ -970,13 +969,9 @@ for iter_num, item in enumerate(hpt_samples):
 
             if args.task == 'link_classification':
 
-                if args.batching_strategy in ['none', 'rearranged']:
-                    val_bce, (val_logits, val_labels) = val_loss
-                    val_metrics = compute_metrics_from_logits(val_logits, val_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse)
-                else:
-                    val_bce, (val_logits, val_labels, val_mask) = val_loss
-                    val_metrics = compute_metrics_from_logits(val_logits, val_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse, all_masks=val_mask)
-
+                val_bce, (val_logits, val_labels) = val_loss
+                val_metrics = compute_metrics_from_logits(val_logits, val_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse)
+            
                 if print_condition:
                     print(f"[*] Val Loss: {val_bce}")
                     for metric_name, metric_value in val_metrics.items():
@@ -1009,13 +1004,9 @@ for iter_num, item in enumerate(hpt_samples):
             
             if args.task == 'link_classification':
 
-                if args.batching_strategy in ['none', 'rearranged']:
-                    test_bce, (test_logits, test_labels) = test_loss
-                    test_metrics = compute_metrics_from_logits(test_logits, test_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse)
-                else:
-                    test_bce, (test_logits, test_labels, test_mask) = test_loss
-                    test_metrics = compute_metrics_from_logits(test_logits, test_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse, mask=test_mask)
-
+                test_bce, (test_logits, test_labels) = test_loss
+                test_metrics = compute_metrics_from_logits(test_logits, test_labels, print_stuff=print_condition, trained_with_mse=trained_with_mse)
+                
                 if print_condition:
                     print(f"[*] Test Loss: {test_bce}")
                     for metric_name, metric_value in test_metrics.items():
