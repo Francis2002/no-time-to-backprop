@@ -983,7 +983,7 @@ for iter_num, item in enumerate(hpt_samples):
 
                 if val_metrics['roc_auc'] > best_val_roc_auc: # Improved
 
-                    if best_val_roc_auc - val_metrics['roc_auc'] > args.min_delta: # Improved by more than min_delta
+                    if val_metrics['roc_auc'] - best_val_roc_auc > args.min_delta: # Improved by more than min_delta
                         early_stop_counter = 0
                     else:
                         early_stop_counter += 1
