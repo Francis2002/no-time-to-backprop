@@ -63,7 +63,7 @@ def _cos(a, b):
     if na == 0 or nb == 0: return np.nan
     return float(np.dot(a, b) / (na * nb))
 
-def _extract_layer_seq_grads(grads, method, layer_idx):
+def _extract_layer_seq_grads(grads, method, layer_idx, args):
     """
     Returns a dict with keys:
       'nu','theta','gamma_log','B_re','B_im','D', and 'phi' (if mixing in ['rotational', 'rotational_full']) (some may be none)
@@ -85,7 +85,7 @@ def _extract_layer_seq_grads(grads, method, layer_idx):
 
     return return_dict
 
-def _layer_group_vectors(grads, method, layer_idx):
+def _layer_group_vectors(grads, method, layer_idx, args):
     """
     Builds concatenated vectors for groups per layer:
       - 'lambda' = [nu, theta]
@@ -95,7 +95,7 @@ def _layer_group_vectors(grads, method, layer_idx):
       - 'all'    = all of the above
     Returns a dict of numpy vectors.
     """
-    g = _extract_layer_seq_grads(grads, method, layer_idx)
+    g = _extract_layer_seq_grads(grads, method, layer_idx, args)
     nu        = _np_array(g['nu'])
     theta     = _np_array(g['theta'])
     gamma_log = _np_array(g['gamma_log'])
@@ -114,13 +114,14 @@ def _layer_group_vectors(grads, method, layer_idx):
 
     return {'lambda': lam, 'gamma': gam, 'B': B, 'all': allv}
 
-def _overall_vectors(grads, method, num_layers):
+
+def _overall_vectors(grads, method, num_layers, args):
     """
     Concatenate 'all' vectors over all layers into a single vector.
     """
     parts = []
     for li in range(num_layers):
-        vecs = _layer_group_vectors(grads, method, li)
+        vecs = _layer_group_vectors(grads, method, li, args)
         if vecs['all'].size:
             parts.append(vecs['all'])
     return np.concatenate(parts) if parts else np.array([])

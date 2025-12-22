@@ -33,7 +33,7 @@ import math
 import operator
 
 from tgap.lr_scheduling import create_optimizer, count_params
-from tgap.utils import print_tree_keys, apply_hpt_to_args
+from tgap.utils import print_tree_keys, apply_hpt_to_args, _overall_vectors, _cos, _layer_group_vectors
 
 import optuna
 
@@ -593,6 +593,89 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
     return unrolled_episode
 
 
+def check_cache(args, hpt, architecture, method, num_steps, csv_path):
+    if not os.path.isfile(csv_path):
+        return None
+    
+    # Map current config to CSV fields
+    try:
+        current_data = {
+            'memory': int(args.memory),
+            'state_size': int(hpt['state_size']),
+            'num_layers': int(hpt['num_layers']),
+            'architecture': str(architecture),
+            'method': str(method),
+            'dataset': str(args.dataset),
+            'task': str(args.task),
+            'split_val_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
+            'split_test_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
+            'drop_hod_dow': not args.add_hod_dow,
+            'batching_strategy': str(args.batching_strategy),
+            'window_mult': float(args.window_mult),
+            'batch_size': int(hpt['batch_size']),
+            'grad_accum_steps': int(args.num_gradient_accumulation_steps),
+            'lr_schedule': str(args.lr_schedule),
+            'warmup_frac': float(args.warmup_frac),
+            'rec_learning_factor': float(hpt['rec_learning_factor']),
+            'activation': str(args.activation),
+            'prenorm': not args.remove_prenorm,
+            'postnorm': bool(args.postnorm),
+            'encoder': not args.remove_encoder,
+            'layer_output': not args.remove_layer_output,
+            'extra_skip': not args.remove_extra_skip,
+            'decoder': str(args.decoder),
+            'mixing': str(args.mixing),
+            'non_linearity_in_recurrence': bool(args.has_non_linearity_in_recurrence),
+            'seed': int(hpt['seed']),
+            'learning_rate': float(hpt['learning_rate']),
+            'beta1': float(hpt['beta1']),
+            'beta2': float(hpt['beta2']),
+            'weight_decay': float(hpt['weight_decay']),
+            'num_epochs': int(args.num_epochs),
+            'num_steps': int(num_steps),
+        }
+    except KeyError:
+        # If any hpt keys are missing (e.g. during grid search with different keys)
+        return None
+
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            match = True
+            for k, v in current_data.items():
+                if k not in row:
+                    match = False
+                    break
+                
+                # Handle different types in CSV (all strings)
+                row_val = row[k]
+                if isinstance(v, bool):
+                    # CSV might store True/False or 1/0 or strings
+                    row_val_bool = row_val.lower() == 'true' or row_val == '1'
+                    if v != row_val_bool:
+                        match = False
+                        break
+                elif isinstance(v, (int, float)):
+                    try:
+                        if not math.isclose(float(v), float(row_val), rel_tol=1e-4):
+                            match = False
+                            break
+                    except ValueError:
+                        match = False
+                        break
+                else:
+                    if str(v) != row_val:
+                        match = False
+                        break
+            
+            if match:
+                if args.dataset == 'toy':
+                    return float(row['best_loss'])
+                else:
+                    return float(row.get('best_val_roc_auc', row.get('best_loss', 0.0)))
+    return None
+
+
 for iter_num, item in enumerate(hpt_samples):
 
     if args.hpt == 'grid':
@@ -605,6 +688,15 @@ for iter_num, item in enumerate(hpt_samples):
 
     print(f"[*] Trial: {trial}")
     print(f"[*] HPT: {hpt}")
+
+    # Check cache
+    csv_path = Path(*RESULTS_BASE) / 'global_results.csv'
+    cached_result = check_cache(args, hpt, architecture, method, args.num_steps, csv_path)
+    if cached_result is not None:
+        print(f"[*] FOUND CACHED RESULT: {cached_result}. Skipping trial.")
+        if trial is not None:
+            study.tell(trial, float(cached_result))
+        continue
 
     # Apply per-trial overrides that affect the data pipeline / model construction
     apply_hpt_to_args(args, hpt, {'steps_for_scheduler': USER_STEPS_FOR_SCHEDULER, 'rec_learning_factor': USER_REC_LR_FACTOR})
@@ -1068,14 +1160,14 @@ for iter_num, item in enumerate(hpt_samples):
                 per_epoch = {'overall': None, 'layers': {}}
 
                 # overall (all layers, all groups)
-                v_md_all = _overall_vectors(grads_for_debug,   method,       args.num_layers)
-                v_fb_all = _overall_vectors(grads_for_cossim, 'FBPTT',       args.num_layers)
+                v_md_all = _overall_vectors(grads_for_debug,   method,       args.num_layers, args)
+                v_fb_all = _overall_vectors(grads_for_cossim, 'FBPTT',       args.num_layers, args)
                 per_epoch['overall'] = _cos(v_md_all, v_fb_all)
 
                 # per-layer, by group (lambda, gamma, B) and 'all'
                 for li in range(args.num_layers):
-                    md_vecs = _layer_group_vectors(grads_for_debug,   method,  li)
-                    fb_vecs = _layer_group_vectors(grads_for_cossim, 'FBPTT',  li)
+                    md_vecs = _layer_group_vectors(grads_for_debug,   method,  li, args)
+                    fb_vecs = _layer_group_vectors(grads_for_cossim, 'FBPTT',  li, args)
                     per_epoch['layers'][f'layer_{li}'] = {
                         'lambda': _cos(md_vecs['lambda'], fb_vecs['lambda']) if md_vecs['lambda'].size and fb_vecs['lambda'].size else float('nan'),
                         'gamma' : _cos(md_vecs['gamma'],  fb_vecs['gamma'])  if md_vecs['gamma'].size  and fb_vecs['gamma'].size  else float('nan'),
@@ -1160,7 +1252,7 @@ for iter_num, item in enumerate(hpt_samples):
         'task': args.task,
         'split_val_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
         'split_test_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
-        'drop_hod_dow': bool(args.drop_hod_dow),
+        'drop_hod_dow': not args.add_hod_dow,
         'batching_strategy': args.batching_strategy,
         'window_mult': args.window_mult,
         'batch_size': args.batch_size,

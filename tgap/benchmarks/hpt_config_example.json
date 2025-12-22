@@ -19,7 +19,6 @@
     "num_layers": {
       "type": "categorical",
       "choices": [
-        1,
         2,
         3,
         4
