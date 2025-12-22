@@ -11,3 +11,4 @@ results_for_rotational_vs_none
 figs_*
 grads_fbptt.txt
 grads_online.txt
+from_chat

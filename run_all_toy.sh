@@ -13,11 +13,6 @@ ENABLE_MEMORY=0
 ENABLE_ACTIVATION=0
 ENABLE_DECODER=0
 ENABLE_MIXING=0
-ENABLE_NORM_FLAGS=0
-ENABLE_ENCODER_FLAG=0
-ENABLE_LAYER_OUTPUT_FLAG=0
-ENABLE_EXTRA_SKIP_FLAG=0
-ENABLE_HAS_NON_LINEARITY_IN_RECURRENCE_FLAG=0
 ENABLE_DATASET=0
 
 # Parameter arrays
@@ -29,11 +24,6 @@ memory_arr=(3)
 activations=(sigmoid full_glu)
 decoders=(MLP NONE)
 mixings=(rotational none full)
-norm_flags=("" "--prenorm")
-encoder_flags=("" "--encoder")
-layer_output_flags=("" "--layer_output")
-extra_skip_flags=("" "--extra_skip")
-has_non_linearity_in_recurrence_flags=("" "--has_non_linearity_in_recurrence")
 datasets=(toy)
 
 # Set default values when disabled
@@ -45,63 +35,43 @@ datasets=(toy)
 [[ $ENABLE_ACTIVATION -eq 0 ]] && activations=(full_glu)
 [[ $ENABLE_DECODER -eq 0 ]] && decoders=(MLP)
 [[ $ENABLE_MIXING -eq 0 ]] && mixings=(rotational_full)
-[[ $ENABLE_NORM_FLAGS -eq 0 ]] && norm_flags=("--prenorm")
-[[ $ENABLE_ENCODER_FLAG -eq 0 ]] && encoder_flags=("--encoder")
-[[ $ENABLE_LAYER_OUTPUT_FLAG -eq 0 ]] && layer_output_flags=("--layer_output")
-[[ $ENABLE_EXTRA_SKIP_FLAG -eq 0 ]] && extra_skip_flags=("--extra_skip")
-[[ $ENABLE_HAS_NON_LINEARITY_IN_RECURRENCE_FLAG -eq 0 ]] && has_non_linearity_in_recurrence_flags=("")
 [[ $ENABLE_DATASET -eq 0 ]] && datasets=(toy)
 
 # Grid search - most important parameters in inner loops (change most frequently)
 for dataset in "${datasets[@]}"; do
-  for has_non_linearity_in_recurrence_flag in "${has_non_linearity_in_recurrence_flags[@]}"; do
-    for extra_skip_flag in "${extra_skip_flags[@]}"; do
-      for layer_output_flag in "${layer_output_flags[@]}"; do
-        for encoder_flag in "${encoder_flags[@]}"; do
-          for norm_flag in "${norm_flags[@]}"; do
-            for mixing in "${mixings[@]}"; do
-              for decoder in "${decoders[@]}"; do
-                for activation in "${activations[@]}"; do
-                  for memory in "${memory_arr[@]}"; do
-                    for num_hidden in "${num_hidden_arr[@]}"; do
-                      for num_layers in "${num_layers_arr[@]}"; do
-                        for architecture in "${architectures[@]}"; do
-                          for method in "${methods[@]}"; do
-                            ((i++))
+  for mixing in "${mixings[@]}"; do
+    for decoder in "${decoders[@]}"; do
+      for activation in "${activations[@]}"; do
+        for memory in "${memory_arr[@]}"; do
+          for num_hidden in "${num_hidden_arr[@]}"; do
+            for num_layers in "${num_layers_arr[@]}"; do
+              for architecture in "${architectures[@]}"; do
+                for method in "${methods[@]}"; do
+                  ((i++))
 
-                            echo "Running with method=$method, arch=$architecture, layers=$num_layers, hidden=$num_hidden, memory=$memory, activation=$activation, decoder=$decoder, mixing=$mixing, norm_flag=$norm_flag, encoder_flag=$encoder_flag, layer_output_flag=$layer_output_flag, extra_skip_flag=$extra_skip_flag, has_non_linearity_in_recurrence_flag=$has_non_linearity_in_recurrence_flag, dataset=$dataset"
+                  echo "Running with method=$method, arch=$architecture, layers=$num_layers, hidden=$num_hidden, memory=$memory, activation=$activation, decoder=$decoder, mixing=$mixing, dataset=$dataset"
 
-                            python3 run_toy_task.py \
-                              -m $method \
-                              -a $architecture \
-                              --num_layers $num_layers \
-                              --num_hidden $num_hidden \
-                              --memory $memory \
-                              --activation $activation \
-                              --decoder $decoder \
-                              --mixing $mixing \
-                              $norm_flag \
-                              $encoder_flag \
-                              $layer_output_flag \
-                              $extra_skip_flag \
-                              $has_non_linearity_in_recurrence_flag \
-                              --dataset $dataset \
-                              --task link_regression \
-                              --batching_strategy none \
-                              --dropout 0.0 \
-                              --weight_decay 0.00 \
-                              --batch_size 0 \
-                              --num_epochs 5000 \
-                              --num_steps 10000 \
-                              --num_nodes 100 \
-                              --acc \
+                  python3 run_toy_task.py \
+                    -m $method \
+                    -a $architecture \
+                    --num_layers $num_layers \
+                    --num_hidden $num_hidden \
+                    --memory $memory \
+                    --activation $activation \
+                    --decoder $decoder \
+                    --mixing $mixing \
+                    --dataset $dataset \
+                    --task link_regression \
+                    --batching_strategy none \
+                    --dropout 0.0 \
+                    --weight_decay 0.00 \
+                    --batch_size 0 \
+                    --num_epochs 5000 \
+                    --num_steps 10000 \
+                    --num_nodes 100 \
+                    --acc \
 
-                            echo "Experiment number: $i completed"
-                          done
-                        done
-                      done
-                    done
-                  done
+                  echo "Experiment number: $i completed"
                 done
               done
             done

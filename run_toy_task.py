@@ -3,6 +3,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"  # Don't pre-allocate all 
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.80"  # Use max 80% of GPU
 
 import argparse
+import json
 import numpy as np
 import jax
 
@@ -32,7 +33,7 @@ import math
 import operator
 
 from tgap.lr_scheduling import create_optimizer, count_params
-from tgap.utils import print_tree_keys
+from tgap.utils import print_tree_keys, apply_hpt_to_args
 
 import optuna
 
@@ -53,24 +54,27 @@ parser.add_argument('--memory', type=int, default=5, help='Memory level for the 
 
 parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
 parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
-parser.add_argument('--num_epochs', type=int, default=5000, help='Number of epochs (this default is for toy task)')
+parser.add_argument('--num_epochs', type=int, default=5000, help='Number of epochs (5000 is the default for toy task)')
 
 parser.add_argument('--dataset', type=str, default='toy', help='Dataset to use (toy, bitcoin_otc, bitcoin_alpha, wiki_rfa, epinions_ratings)')
 parser.add_argument('--task', type=str, default='link_classification', help='Task to use (link_regression, link_classification)')
-parser.add_argument('--drop_hod_dow', action='store_true', help='Drop HOD and DOW from the features (benchmarks only)')
+parser.add_argument('--add_hod_dow', action='store_true', help='Add HOD and DOW from the features (benchmarks only)')
+parser.add_argument('--no_dt_feats', action='store_true', help='If set, do not add dt (time-since-last-interaction) features for src/dst.')
 
-parser.add_argument('--early_stop_patience', type=int, default=25, help='Number of epochs to wait before early stopping')
+parser.add_argument('--early_stop_patience', type=int, default=20, help='Number of epochs to wait before early stopping')
 parser.add_argument('--min_delta', type=float, default=1e-4, help='Minimum change in the metric to consider it an improvement')
 parser.add_argument('--early_stop_metric', type=str, default='loss', help='Metric to use for early stopping (loss, AUC)')
 
 # ---------------------------------------------------- Architecture choices ----------------------------------------------------
 
+# Model Size
 parser.add_argument('--num_layers', type=int, default=2, help='Number of layers')
 parser.add_argument('--num_hidden', type=int, default=32, help='Number of hidden units')
 parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna (otherwise we calculate it)')
 parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
 parser.add_argument('--equal_dmodel', action='store_true', help='Use d_model = num_hidden (only for LRU and ZUC)')
 
+# Model Architecture
 parser.add_argument('--activation', type=str, default='full_glu', help='Activation function (tanh, sigmoid, gelu or full_glu or half_glu1 or half_glu2 or none)')
 parser.add_argument('--remove_prenorm', action='store_true', help='Remove pre normalization')
 parser.add_argument('--postnorm', action='store_true', help='Use post normalization instead of pre normalization (the default)')
@@ -108,19 +112,32 @@ parser.add_argument('--window_mult', type=float, default=10, help='For rearrange
 
 parser.add_argument('--hpt', type=str, choices=['grid', 'optuna'], default='grid',
                     help='Use grid search (current behavior) or Optuna.')
-parser.add_argument('--n_trials', type=int, default=20,
+parser.add_argument('--n_trials', type=int, default=100,
                     help='Number of Optuna trials (ignored for grid).')
+parser.add_argument('--hpt_config', type=str, default='',
+                    help='Path to JSON file specifying Optuna search space (optional)')
 
 # -------------------------------------------------------------------------------------------------------------------
 
 
 args = parser.parse_args()
 
+# Keep the CLI value so we can reset per-trial (important if it was 0 -> auto)
+USER_STEPS_FOR_SCHEDULER = int(args.steps_for_scheduler)
+USER_REC_LR_FACTOR = float(args.rec_learning_factor)
+
+# Optional: load Optuna search-space overrides from JSON
+HPT_CONFIG = None
+if getattr(args, 'hpt_config', ''):
+    with open(args.hpt_config, 'r') as f:
+        HPT_CONFIG = json.load(f)
+
+
 method = args.method.upper()
 architecture = args.architecture.upper()
 NUM_EPOCHS = args.num_epochs
 
-RESULTS_BASE = ['results_for_rotational_vs_none', f'{args.dataset}_{method}']
+RESULTS_BASE = ['results_for_benchmarks', f'{args.dataset}_{method}']
 print(f"\n[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
 
 if args.dont_store_results:
@@ -128,85 +145,6 @@ if args.dont_store_results:
 
 base_results_path = Path(*RESULTS_BASE)
 base_results_path.mkdir(parents=True, exist_ok=True)
-
-# ---- Cosine helpers -------------------------------------------------
-def _np_array(x):
-    if x is None: return None
-    return np.asarray(x)
-
-def _concat_valid(parts):
-    vecs = [p.ravel() for p in parts if p is not None]
-    return np.concatenate(vecs) if len(vecs) else np.array([])
-
-def _cos(a, b):
-    a = a.ravel().astype(float); b = b.ravel().astype(float)
-    na = np.linalg.norm(a); nb = np.linalg.norm(b)
-    if na == 0 or nb == 0: return np.nan
-    return float(np.dot(a, b) / (na * nb))
-
-def _extract_layer_seq_grads(grads, method, layer_idx):
-    """
-    Returns a dict with keys:
-      'nu','theta','gamma_log','B_re','B_im','D', and 'phi' (if mixing in ['rotational', 'rotational_full']) (some may be none)
-    """
-    layer = grads['cell']['params']['encoder'][f'layers_{layer_idx}']['seq']
-    # Some models may lack D; guard with .get
-    
-    return_dict = {
-        'nu':        layer.get('nu',        None),
-        'theta':     layer.get('theta',     None),
-        'gamma_log': layer.get('gamma_log', None),
-        'B_re':      layer.get('B_re',      None),
-        'B_im':      layer.get('B_im',      None),
-        'D':         layer.get('D',         None),
-    }
-
-    if args.mixing in ['rotational', 'rotational_full']:
-        return_dict['phi'] = layer.get('phi', None)
-
-    return return_dict
-
-def _layer_group_vectors(grads, method, layer_idx):
-    """
-    Builds concatenated vectors for groups per layer:
-      - 'lambda' = [nu, theta]
-      - 'gamma'  = [gamma_log]
-      - 'B'      = [B_re, B_im]
-      - 'phi'    = [phi] (if mixing in ['rotational', 'rotational_full'])
-      - 'all'    = all of the above
-    Returns a dict of numpy vectors.
-    """
-    g = _extract_layer_seq_grads(grads, method, layer_idx)
-    nu        = _np_array(g['nu'])
-    theta     = _np_array(g['theta'])
-    gamma_log = _np_array(g['gamma_log'])
-    B_re      = _np_array(g['B_re'])
-    B_im      = _np_array(g['B_im'])
-
-    lam = _concat_valid([nu, theta])
-    gam = _concat_valid([gamma_log])
-    B   = _concat_valid([B_re, B_im])
-    allv = _concat_valid([lam, gam, B])
-
-    if args.mixing in ['rotational', 'rotational_full']:
-        phi = _np_array(g['phi'])
-        allv = _concat_valid([lam, gam, B, phi])
-        return {'lambda': lam, 'gamma': gam, 'B': B, 'phi': phi, 'all': allv}
-
-    return {'lambda': lam, 'gamma': gam, 'B': B, 'all': allv}
-
-def _overall_vectors(grads, method, num_layers):
-    """
-    Concatenate 'all' vectors over all layers into a single vector.
-    """
-    parts = []
-    for li in range(num_layers):
-        vecs = _layer_group_vectors(grads, method, li)
-        if vecs['all'].size:
-            parts.append(vecs['all'])
-    return np.concatenate(parts) if parts else np.array([])
-# --------------------------------------------------------------------
-
 
 # Edge case: If no layer_output, d_model must be 2 * hidden
 if args.remove_layer_output and architecture in ['LRU', 'ZUC']:
@@ -242,38 +180,70 @@ if args.hpt == 'grid':
     hpt_samples = GridSampler(hpt_space)
 else:
     # Optuna-backed iterator that behaves like your GridSampler loop
-    study = optuna.create_study(direction='minimize')
+    study = optuna.create_study(direction='maximize')
+    def _suggest_from_config(trial, name, default):
+        """Suggest a value using HPT_CONFIG['search'][name] if provided.
+
+        If no config is provided and `default` is a list/tuple, we treat it as a categorical choice list.
+        If `default` is a dict, we treat it as a suggestion specification.
+        """
+        spec = (HPT_CONFIG.get('search', {}) or {}).get(name) if HPT_CONFIG else None
+        
+        if spec is None:
+            if isinstance(default, (list, tuple)):
+                return trial.suggest_categorical(name, list(default))
+            if isinstance(default, dict):
+                spec = default
+            else:
+                return default
+
+        typ = spec.get('type')
+        if typ == 'categorical':
+            return trial.suggest_categorical(name, spec['choices'])
+        if typ == 'int':
+            return trial.suggest_int(name, int(spec['low']), int(spec['high']), step=int(spec.get('step', 1)), log=bool(spec.get('log', False)))
+        if typ == 'float':
+            return trial.suggest_float(name, float(spec['low']), float(spec['high']), log=bool(spec.get('log', False)))
+        raise ValueError(f"Unknown specification type for {name}: {typ}")
+
     def optuna_iter():
+        """Yield (trial, hpt_dict) pairs.
+
+        NOTE: We optimize *validation ROC AUC* (direction='maximize'), and we
+        keep early-stopping/scheduling settings fixed via CLI args so the
+        search focuses on model/optimizer knobs.
+        """
         for _ in range(args.n_trials):
             trial = study.ask()
 
+            # Model size / regularization
+            state_size = _suggest_from_config(trial, 'state_size', hpt_space.get('state_size', [args.num_hidden]))
+            d_model_factor = _suggest_from_config(trial, 'd_model_factor', [0.5, 1.0, 2.0])
+            batch_size = _suggest_from_config(trial, 'batch_size', [64, 128, 200])
+            rec_learning_factor = _suggest_from_config(trial, 'rec_learning_factor', [0.25, 0.5, 1.0])
+
             hpt = {
-                # Model
-                'state_size': trial.suggest_categorical('state_size', hpt_space.get('state_size', [args.num_hidden])),
-                'dropout': trial.suggest_float('dropout', 0.0, 0.5),
-                'batch_size': trial.suggest_categorical('batch_size', [args.batch_size]),
-                'd_model': trial.suggesyt_categorical('d_model', [args.d_model]),
+                'memory': args.memory,
+                'seed': hpt_space.get('seed', [43])[0],
+                'num_layers': int(_suggest_from_config(trial, 'num_layers', [1, 2, 3, 4])),
+                'state_size': int(state_size),
+                'd_model_factor': float(d_model_factor),
+                'dropout': float(_suggest_from_config(trial, 'dropout', {'type': 'float', 'low': 0.0, 'high': 0.3})),
+                'pos_weight': float(_suggest_from_config(trial, 'pos_weight', {'type': 'float', 'low': 1.0, 'high': 20.0})),
+
+                # Training loop
+                'batch_size': int(batch_size),
+                'n_accumulation_steps': int(_suggest_from_config(trial, 'n_accumulation_steps', {'type': 'int', 'low': 1, 'high': 16})),
 
                 # Optimizer
-                'learning_rate': trial.suggest_float('learning_rate', 1e-4, 3e-2, log=True),
-                'learning_rate_rec': trial.suggest_float('learning_rate_rec', 1e-4, 3e-2, log=True),
-                'beta1': trial.suggest_float('beta1', 0.8, 0.95),
-                'beta2': trial.suggest_float('beta2', 0.95, 0.9999),
-                'weight_decay': trial.suggest_float('weight_decay', 0.0, 1e-5, log=True),
-                'weight_decay_on_B': trial.suggest_categorical('weight_decay_on_B', [True, False]),
-                'rec_lr_on_B': trial.suggest_categorical('rec_lr_on_B', [True, False]),
-
-                # LR Scheduling
-                'early_stopping_patience': trial.suggest_int('early_stopping_patience', 10, 100),
-                'warmup_end_epoch': trial.suggest_int('warmup_end_epoch', 0, 50),
-                'cosine_annealing': trial.suggest_categorical('cosine_annealing', [True, False]),
-
-                # Training Loop
-                'epochs': trial.suggest_categorical('epochs', [NUM_EPOCHS]),
-                'n_accumulation_steps': trial.suggest_int('n_accumulation_steps', 1, 32),
+                'learning_rate': float(_suggest_from_config(trial, 'learning_rate', {'type': 'float', 'low': 1e-4, 'high': 1e-2, 'log': True})),
+                'rec_learning_factor': float(rec_learning_factor),
+                'beta1': float(_suggest_from_config(trial, 'beta1', {'type': 'float', 'low': 0.85, 'high': 0.95})),
+                'beta2': float(_suggest_from_config(trial, 'beta2', {'type': 'float', 'low': 0.95, 'high': 0.9999})),
+                'weight_decay': float(_suggest_from_config(trial, 'weight_decay', {'type': 'float', 'low': 1e-9, 'high': 1e-3, 'log': True})),
             }
             yield trial, hpt
-    hpt_iter = optuna_iter()
+    hpt_samples = optuna_iter()
 
 # Choose cell type based on method.
 if architecture == 'ZUC':
@@ -297,7 +267,10 @@ def init_layer(layer_cls, **kwargs):
     return partial(layer, **kwargs)
 
 def make_model_step(model, num_nodes, mode="training"):
-    if args.dedupe:
+    dedupe = args.dedupe
+    batch_size = args.batch_size
+    mixing = args.mixing
+    if dedupe:
         init_model_state = partial(memory_store, example_state=model.init_local(1), num_entries=num_nodes + 1)  # +1 to have a dummy for the dupped updates to go to
         get_state = store_get
         set_state = store_set_dedupe
@@ -305,7 +278,7 @@ def make_model_step(model, num_nodes, mode="training"):
         init_model_state, get_state, set_state = state_store(num_nodes, model.init_local, numpy=False)
 
     if method in ['ONLINE', 'TBPTT'] and mode == "training":
-        if args.dedupe:
+        if dedupe:
             init_lambda_traces = partial(memory_store, example_state=model.init_lambda_traces(1), num_entries=num_nodes + 1)
             init_gamma_traces = partial(memory_store, example_state=model.init_gamma_traces(1), num_entries=num_nodes + 1)
             init_B_traces = partial(memory_store, example_state=model.init_B_traces(1), num_entries=num_nodes + 1)
@@ -318,7 +291,7 @@ def make_model_step(model, num_nodes, mode="training"):
             set_gamma_traces = store_set_dedupe
             set_B_traces = store_set_dedupe
 
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 init_phi_traces = partial(memory_store, example_state=model.init_phi_traces(1), num_entries=num_nodes + 1)
                 get_phi_traces = store_get
                 set_phi_traces = store_set_dedupe
@@ -327,14 +300,14 @@ def make_model_step(model, num_nodes, mode="training"):
             init_gamma_traces, get_gamma_traces, set_gamma_traces = state_store(num_nodes, model.init_gamma_traces, numpy=False)
             init_B_traces, get_B_traces, set_B_traces = state_store(num_nodes, model.init_B_traces, numpy=False)
 
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 init_phi_traces, get_phi_traces, set_phi_traces = state_store(num_nodes, model.init_phi_traces, numpy=False)
         
         def init_model_traces():
             lambda_traces = init_lambda_traces()
             gamma_traces = init_gamma_traces()
             B_traces = init_B_traces()
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 phi_traces = init_phi_traces()
                 return (lambda_traces, gamma_traces, B_traces, phi_traces)
             else:
@@ -344,7 +317,7 @@ def make_model_step(model, num_nodes, mode="training"):
             batch_lambda_traces = get_lambda_traces(traces[0], nodes)
             batch_gamma_traces = get_gamma_traces(traces[1], nodes)
             batch_B_traces = get_B_traces(traces[2], nodes)
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 batch_phi_traces = get_phi_traces(traces[3], nodes)
                 return (batch_lambda_traces, batch_gamma_traces, batch_B_traces, batch_phi_traces)
             else:
@@ -354,7 +327,7 @@ def make_model_step(model, num_nodes, mode="training"):
             new_lambda_traces = set_lambda_traces(traces[0], nodes, new_batch_traces[0])
             new_gamma_traces = set_gamma_traces(traces[1], nodes, new_batch_traces[1])
             new_B_traces = set_B_traces(traces[2], nodes, new_batch_traces[2])
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 new_phi_traces = set_phi_traces(traces[3], nodes, new_batch_traces[3])
                 return (new_lambda_traces, new_gamma_traces, new_B_traces, new_phi_traces)
             else:
@@ -368,7 +341,7 @@ def make_model_step(model, num_nodes, mode="training"):
 
     def step_model(params, states, edge, rng_model=None):
         src, dst, feature, target = edge
-        if args.batch_size != 0:
+        if batch_size != 0:
             # interleave: [src0,dst0, src1,dst1, ...]
             nodes = jnp.stack([src, dst], axis=1).reshape(-1)
         else:
@@ -388,13 +361,13 @@ def make_model_step(model, num_nodes, mode="training"):
         
         batch_states = get_state(states, nodes)
 
-        if args.batch_size != 0:
-            batch_states = jax.tree_util.tree_map(lambda x: x.reshape((args.batch_size, 2, -1)), batch_states)
+        if batch_size != 0:
+            batch_states = jax.tree_util.tree_map(lambda x: x.reshape((batch_size, 2, -1)), batch_states)
 
         if method in ['ONLINE', 'TBPTT'] and mode == "training":
             raw_batch_traces = get_traces(traces, nodes)
             
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 lambda_traces, gamma_traces, B_traces, phi_traces = raw_batch_traces
             else:
                 lambda_traces, gamma_traces, B_traces = raw_batch_traces
@@ -403,8 +376,8 @@ def make_model_step(model, num_nodes, mode="training"):
             
             # Restructure traces by layer instead of by trace type # TODO
 
-            if args.batch_size == 0:
-                if args.mixing == 'rotational_full':
+            if batch_size == 0:
+                if mixing == 'rotational_full':
                     batch_traces = tuple(
                         (lambda_traces[i], gamma_traces[i], B_traces[i], phi_traces[i])
                         for i in range(n_layers)
@@ -415,46 +388,46 @@ def make_model_step(model, num_nodes, mode="training"):
                         for i in range(n_layers)
                     )
             else:
-                if args.mixing == 'rotational_full':
+                if mixing == 'rotational_full':
                     batch_traces = tuple(
-                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)), phi_traces[i].reshape((args.batch_size, 2, -1)))
+                        (lambda_traces[i].reshape((batch_size, 2, -1)), gamma_traces[i].reshape((batch_size, 2, -1)), B_traces[i].reshape((batch_size, 2, -1)), phi_traces[i].reshape((batch_size, 2, -1)))
                         for i in range(n_layers)
                     )
                 else:
                     batch_traces = tuple(
-                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
+                        (lambda_traces[i].reshape((batch_size, 2, -1)), gamma_traces[i].reshape((batch_size, 2, -1)), B_traces[i].reshape((batch_size, 2, -1)))
                         for i in range(n_layers)
                     )
 
             batch_states_and_traces = (batch_states, batch_traces)
 
-        if (args.batch_size == 0) and feature.ndim == 0:
+        if (batch_size == 0) and feature.ndim == 0:
             inputs = jnp.array([feature])
-        elif (args.batch_size == 0):
+        elif (batch_size == 0):
             inputs = jnp.array(feature)
         else:
-            inputs = jnp.array(feature).reshape((args.batch_size, -1))
+            inputs = jnp.array(feature).reshape((batch_size, -1))
 
         if method in ['ONLINE', 'TBPTT'] and mode == "training":
             (new_batch_states, new_batch_traces), outputs = model.step(params, batch_states_and_traces, inputs, target, rng_model)
 
-            if args.batch_size == 0:
+            if batch_size == 0:
                 # Restructure traces back to original format
                 new_batch_lambda_traces = tuple(new_batch_traces[i][0] for i in range(n_layers))
                 new_batch_gamma_traces = tuple(new_batch_traces[i][1] for i in range(n_layers))
                 new_batch_B_traces = tuple(new_batch_traces[i][2] for i in range(n_layers))
-                if args.mixing == 'rotational_full':
+                if mixing == 'rotational_full':
                     new_batch_phi_traces = tuple(new_batch_traces[i][3] for i in range(n_layers))
                     new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces, new_batch_phi_traces)
                 else:
                     new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
             else:
                 # Restructure traces back to original format
-                new_batch_lambda_traces = tuple(new_batch_traces[i][0].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
-                new_batch_gamma_traces = tuple(new_batch_traces[i][1].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
-                new_batch_B_traces = tuple(new_batch_traces[i][2].reshape((args.batch_size * 2,) + new_batch_traces[i][2].shape[2::]) for i in range(n_layers))
-                if args.mixing == 'rotational_full':
-                    new_batch_phi_traces = tuple(new_batch_traces[i][3].reshape((args.batch_size * 2, -1)) for i in range(n_layers))
+                new_batch_lambda_traces = tuple(new_batch_traces[i][0].reshape((batch_size * 2, -1)) for i in range(n_layers))
+                new_batch_gamma_traces = tuple(new_batch_traces[i][1].reshape((batch_size * 2, -1)) for i in range(n_layers))
+                new_batch_B_traces = tuple(new_batch_traces[i][2].reshape((batch_size * 2,) + new_batch_traces[i][2].shape[2::]) for i in range(n_layers))
+                if mixing == 'rotational_full':
+                    new_batch_phi_traces = tuple(new_batch_traces[i][3].reshape((batch_size * 2, -1)) for i in range(n_layers))
                     new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces, new_batch_phi_traces)
                 else:
                     new_batch_traces = (new_batch_lambda_traces, new_batch_gamma_traces, new_batch_B_traces)
@@ -463,8 +436,8 @@ def make_model_step(model, num_nodes, mode="training"):
             new_batch_states, outputs = model.step(params, batch_states, inputs, target, rng_model)
 
         # Reshape back to what the state store expects
-        if args.batch_size != 0:
-            new_batch_states = jax.tree_util.tree_map(lambda x: x.reshape((args.batch_size * 2, -1)), new_batch_states)
+        if batch_size != 0:
+            new_batch_states = jax.tree_util.tree_map(lambda x: x.reshape((batch_size * 2, -1)), new_batch_states)
 
         states = set_state(states, nodes, new_batch_states)
 
@@ -483,6 +456,8 @@ def make_model_step(model, num_nodes, mode="training"):
 
 
 def make_fbptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None, cell=None, get_traces=None, mode="training"):
+    task = args.task
+    dataset = args.dataset
 
     def episodic_step(params, states, _=None):
         data_state, model_state = states
@@ -493,7 +468,7 @@ def make_fbptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=Non
     def unrolled_step(params, state, mode="training"):
         state, losses = lax.scan(partial(episodic_step, params), state, None, num_steps)
 
-        if mode == "no_training" and args.task in ['link_classification']:
+        if mode == "no_training" and task in ['link_classification']:
             bces, metrics = losses
             return (jnp.mean(bces), metrics), state
         else:
@@ -517,7 +492,7 @@ def make_fbptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=Non
         params, optimizer_state, data_state, model_state, _ = state
         
         # No training in toy means we want fbptt grads for cos-sim
-        if args.dataset in ['toy']:
+        if dataset in ['toy']:
             (loss, (data_state, model_state)), grads = unrolled_step_with_grads(params, (data_state, model_state))
 
             return (params, optimizer_state, data_state, model_state, grads), loss
@@ -533,6 +508,9 @@ def make_fbptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=Non
 
 
 def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None, cell=None, get_traces=None):
+    batch_size = args.batch_size
+    mixing = args.mixing
+    acc = args.acc
     
     def episodic_step(states, _=None):
 
@@ -549,7 +527,7 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
             nodes = jnp.array((new_edge[0], new_edge[1]))
             raw_batch_traces = get_traces(traces, nodes)
 
-            if args.mixing == 'rotational_full':
+            if mixing == 'rotational_full':
                 lambda_traces, gamma_traces, B_traces, phi_traces = raw_batch_traces
             else:
                 lambda_traces, gamma_traces, B_traces = raw_batch_traces
@@ -557,8 +535,8 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
             n_layers = len(lambda_traces)
             
             # Restructure traces by layer instead of by trace type
-            if args.batch_size == 0:
-                if args.mixing == 'rotational_full':
+            if batch_size == 0:
+                if mixing == 'rotational_full':
                     batch_traces = tuple(
                         (lambda_traces[i], gamma_traces[i], B_traces[i], phi_traces[i])
                         for i in range(n_layers)
@@ -569,30 +547,30 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
                         for i in range(n_layers)
                     )
             else:
-                if args.mixing == 'rotational_full':
+                if mixing == 'rotational_full':
                     batch_traces = tuple(
-                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)), phi_traces[i].reshape((args.batch_size, 2, -1)))
+                        (lambda_traces[i].reshape((batch_size, 2, -1)), gamma_traces[i].reshape((batch_size, 2, -1)), B_traces[i].reshape((batch_size, 2, -1)), phi_traces[i].reshape((batch_size, 2, -1)))
                         for i in range(n_layers)
                     )
                 else:
                     batch_traces = tuple(
-                        (lambda_traces[i].reshape((args.batch_size, 2, -1)), gamma_traces[i].reshape((args.batch_size, 2, -1)), B_traces[i].reshape((args.batch_size, 2, -1)))
+                        (lambda_traces[i].reshape((batch_size, 2, -1)), gamma_traces[i].reshape((batch_size, 2, -1)), B_traces[i].reshape((batch_size, 2, -1)))
                         for i in range(n_layers)
                     )
 
                 grads['cell']['params'] = jax.tree_util.tree_map(
-                    lambda s: jnp.repeat(s[None, :], args.batch_size, axis=0) / args.batch_size,
+                    lambda s: jnp.repeat(s[None, :], batch_size, axis=0) / batch_size,
                     grads['cell']['params'],
                 )
 
             grads['cell']['params'] = cell.update_gradients(params['cell'], grads, batch_traces, grads['cell']['perturbations'])
 
-            if args.batch_size != 0:
+            if batch_size != 0:
                 grads['cell']['params'] = jax.tree_util.tree_map(lambda s: jnp.sum(s, axis=0), grads['cell']['params'])
         
         accumulator = tree_map(jnp.add, accumulator, grads)
 
-        if not args.acc:
+        if not acc:
             updates, optimizer_state = optimizer.update(grads, optimizer_state, params)
             params = optax.apply_updates(params, updates)
 
@@ -606,7 +584,7 @@ def make_bptt_unrolled(step_fun, step_data, optimizer, num_steps, rng_model=None
         (accumulator, data_state, model_state, optimizer_state, params), loss = lax.scan(episodic_step, (accumulator, data_state, model_state, optimizer_state, params), None, num_steps)
 
         grads = tree_map(lambda a: a/num_steps, accumulator)
-        if args.acc:
+        if acc:
             updates, optimizer_state = optimizer.update(grads, optimizer_state, params)
             params = optax.apply_updates(params, updates)
         
@@ -624,8 +602,19 @@ for iter_num, item in enumerate(hpt_samples):
         trial, hpt = item
 
     print(f"\n[*] ----------------------------- Iteration: {iter_num} -----------------------------\n")
-    memory = hpt['memory']
-    state_size = hpt['state_size']
+
+    print(f"[*] Trial: {trial}")
+    print(f"[*] HPT: {hpt}")
+
+    # Apply per-trial overrides that affect the data pipeline / model construction
+    apply_hpt_to_args(args, hpt, {'steps_for_scheduler': USER_STEPS_FOR_SCHEDULER, 'rec_learning_factor': USER_REC_LR_FACTOR})
+    memory = args.memory
+    state_size = args.num_hidden
+
+    # Tie hidden size and d_model (optionally) for reproducible capacity scaling
+    args.num_hidden = int(state_size)
+    if 'd_model_factor' in hpt:
+        args.d_model = max(1, int(round(float(state_size) * float(hpt['d_model_factor']))))
     
     if args.dataset == 'toy':
         # Load data
@@ -643,7 +632,8 @@ for iter_num, item in enumerate(hpt_samples):
             args.dataset,
             val_ratio=0.15 if args.dataset != 'mooc' else 0.2, 
             test_ratio=0.15 if args.dataset != 'mooc' else 0.2,
-            drop_hod_dow=args.drop_hod_dow
+            drop_hod_dow= not args.add_hod_dow,
+            add_dt_feats= not args.no_dt_feats
         )
         
         init_data, step_data, num_nodes, num_steps, feature_size, output_size = get_stream_sampler_from_npz(str(PROJECT_ROOT / f"tgap/data/npzs/{args.dataset}_stream.npz"), split="train", shuffle_each_epoch=False, batch_size=args.batch_size if args.batch_size != 0 else None, batching_strategy=args.batching_strategy, window_mult=args.window_mult)
@@ -1017,7 +1007,13 @@ for iter_num, item in enumerate(hpt_samples):
                 
                 if comparison_function(current_val_metric, best_val_metric): # Improved
 
-                    if comparison_function(current_val_metric - best_val_metric, args.min_delta): # Improved by more than min_delta
+                    # Determine magnitude of improvement for min_delta check
+                    if args.early_stop_metric == 'AUC':
+                        improvement = current_val_metric - best_val_metric
+                    else:
+                        improvement = best_val_metric - current_val_metric
+
+                    if improvement > args.min_delta:
                         early_stop_counter = 0
                     else:
                         early_stop_counter += 1
@@ -1125,8 +1121,13 @@ for iter_num, item in enumerate(hpt_samples):
         val_losses = np.array(val_losses)
         test_losses = np.array(test_losses)
 
-    if trial is not None:
-        study.tell(trial, np.min(val_losses))
+        # --- Protocol metric: test ROC AUC at the epoch with best validation ROC AUC ---
+        best_test_roc_auc_at_best_val = None
+        if args.dataset not in ['toy'] and args.task == 'link_classification' and best_val_epoch >= 0 and len(test_metrics_history) > best_val_epoch:
+            best_test_roc_auc_at_best_val = float(test_metrics_history[best_val_epoch]['roc_auc'])
+
+        if trial is not None:
+            study.tell(trial, float(best_val_roc_auc))
 
     general_config_sub_folder = f'memory_{memory}_hidden_{state_size}_layers_{args.num_layers}_act_{args.activation}'
     flag_configuration_id = f'prenorm_{not args.remove_prenorm}_postnorm_{args.postnorm}_encoder_{not args.remove_encoder}_layerout_{not args.remove_layer_output}_extraskip_{not args.remove_extra_skip}_decoder_{args.decoder}_mixing_{args.mixing}_nonlinrec_{args.has_non_linearity_in_recurrence}_batchsize_{args.batch_size}_seed_{seed}'
@@ -1155,6 +1156,19 @@ for iter_num, item in enumerate(hpt_samples):
         'num_layers': args.num_layers,
         'architecture': architecture,
         'method': method,
+        'dataset': args.dataset,
+        'task': args.task,
+        'split_val_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
+        'split_test_ratio': 0.15 if args.dataset != 'mooc' else 0.2,
+        'drop_hod_dow': bool(args.drop_hod_dow),
+        'batching_strategy': args.batching_strategy,
+        'window_mult': args.window_mult,
+        'batch_size': args.batch_size,
+        'grad_accum_steps': args.num_gradient_accumulation_steps,
+        'lr_schedule': args.lr_schedule,
+        'warmup_frac': args.warmup_frac,
+        'rec_learning_factor': args.rec_learning_factor,
+
         'activation': args.activation,
         'prenorm': not args.remove_prenorm,
         'postnorm': args.postnorm,
@@ -1184,6 +1198,15 @@ for iter_num, item in enumerate(hpt_samples):
         data['best_test_loss'] = float(np.min(test_losses))
         data['average_final_100_test_loss'] = float(np.mean(test_losses[-100:]))
         data['final_test_loss'] = float(test_losses[-1])
+
+        # Metrics used for model selection / reporting
+        if args.task == 'link_classification':
+            data['best_val_roc_auc'] = float(best_val_roc_auc)
+            data['best_val_epoch'] = int(best_val_epoch + 1) if best_val_epoch >= 0 else -1
+            data['best_test_roc_auc_peak'] = float(best_test_roc_auc)
+            data['best_test_epoch_peak'] = int(best_test_epoch + 1) if best_test_epoch >= 0 else -1
+            data['test_roc_auc_at_best_val_epoch'] = float(best_test_roc_auc_at_best_val) if best_test_roc_auc_at_best_val is not None else float('nan')
+
 
     # Write to CSV
     with open(csv_path, 'a', newline='') as csvfile:

@@ -81,6 +81,7 @@ def preprocess_temporal_csv(
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
     drop_hod_dow: bool = False,
+    add_dt_feats: bool = True,
 ):
     """
     Preprocess temporal CSVs (Wikipedia, MOOC, Reddit) from the TGN paper.
@@ -98,11 +99,12 @@ def preprocess_temporal_csv(
             with np.load(out_npz, allow_pickle=True) as data:
                 if 'meta' in data:
                     meta = data['meta']
-                    if (len(meta) == 4 and 
+                    if (len(meta) == 5 and 
                         meta[0] == dataset_name and 
                         np.isclose(float(meta[1]), val_ratio) and 
                         np.isclose(float(meta[2]), test_ratio) and 
-                        bool(meta[3]) == drop_hod_dow):
+                        bool(meta[3]) == drop_hod_dow and 
+                        bool(meta[4]) == add_dt_feats):
                         print(f"[*] Npz file {out_npz} already exists with matching meta. Using existing file.")
                         return
                     else:
@@ -167,31 +169,28 @@ def preprocess_temporal_csv(
     print("[*] Generating temporal features...")
     if not drop_hod_dow:
         hod_dow = _time_feats(ts)                          # [N, 4]
-    dt_s, dt_d = _dt_endpoints(src, dst, ts, num_nodes) # [N], [N]
+    if add_dt_feats:
+        dt_s, dt_d = _dt_endpoints(src, dst, ts, num_nodes) # [N], [N]
+    else:
+        dt_s = dt_d = None
+
+    # Build feature matrix (provided + optional dt + optional hod/dow)
+    parts = [provided_feat]
+    print(f"    Provided features dim: {provided_feat.shape[1]}")
+
+    if add_dt_feats:
+        print(f"    Temporal dt features dim: 2")
+        parts += [dt_s[:, None], dt_d[:, None]]
+    else:
+        print(f"    (Dropped temporal dt features)")
 
     if not drop_hod_dow:
-        print(f"    Provided features dim: {provided_feat.shape[1]}")
-        print(f"    Temporal dt features dim: 2")
         print(f"    Time hod/dow features dim: 4")
-
-        # Concatenate all features
-        feat = np.concatenate([
-            provided_feat, 
-            dt_s[:,None], 
-            dt_d[:,None], 
-            hod_dow
-        ], axis=1).astype(np.float32)
+        parts += [hod_dow]
     else:
-        print(f"    Provided features dim: {provided_feat.shape[1]}")
-        print(f"    Temporal dt features dim: 2")
         print(f"    (Dropped hod/dow features)")
 
-        # Concatenate provided + dt features only
-        feat = np.concatenate([
-            provided_feat, 
-            dt_s[:,None], 
-            dt_d[:,None], 
-        ], axis=1).astype(np.float32)
+    feat = np.concatenate(parts, axis=1).astype(np.float32)
 
     # Labels (already extracted as 'target')
     # Reshape to [N, 1] if it's not already
@@ -219,7 +218,7 @@ def preprocess_temporal_csv(
         idx_train=idx_train,
         idx_val=idx_val,
         idx_test=idx_test,
-        meta=np.array([dataset_name, val_ratio, test_ratio, drop_hod_dow], dtype=object)
+        meta=np.array([dataset_name, val_ratio, test_ratio, drop_hod_dow, add_dt_feats], dtype=object)
     )
     print(f"[*] Saved {out_npz}  |  N={N}  nodes={num_nodes}  feat_dim={feat.shape[1]}")
     print(f"    train={len(idx_train)}  val={len(idx_val)}  test={len(idx_test)}")

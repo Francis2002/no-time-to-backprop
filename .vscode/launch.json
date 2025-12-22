@@ -146,6 +146,24 @@
                 "--num_steps", "2",
                 "--num_nodes", "4",
             ]
+        },
+        {
+            "name": "Test HPT",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv_py12/bin/python",
+            "program": "${workspaceFolder}/run_toy_task.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "-m", "ONLINE",
+                "-a", "ZUC",
+                "--dataset", "mooc",
+                "--dont_store_results",
+                "--dedupe",
+                "--hpt", "optuna",
+                "--hpt_config", "./tgap/benchmarks/hpt_config_example.json",
+            ]
         }
     ]
 }

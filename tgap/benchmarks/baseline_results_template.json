@@ -1,0 +1,26 @@
+{
+  "source": "Deep Graph Sprints (Rossi et al., 2020) - node classification table",
+  "metric": "roc_auc",
+  "values": {
+    "JODIE": {
+      "wikipedia": null,
+      "reddit": null,
+      "mooc": null
+    },
+    "TGN": {
+      "wikipedia": null,
+      "reddit": null,
+      "mooc": null
+    },
+    "GraphSprints": {
+      "wikipedia": null,
+      "reddit": null,
+      "mooc": null
+    },
+    "DeepGraphSprints": {
+      "wikipedia": null,
+      "reddit": null,
+      "mooc": null
+    }
+  }
+}
