@@ -218,7 +218,13 @@ else:
 
             # Model size / regularization
             state_size = _suggest_from_config(trial, 'state_size', hpt_space.get('state_size', [args.num_hidden]))
-            d_model_factor = _suggest_from_config(trial, 'd_model_factor', [0.5, 1.0, 2.0])
+            
+            if int(state_size) > 64:
+                # Force d_model_factor to 0.5 when state_size is > 64
+                # We don't call Optuna suggestion here to avoid "dynamic value space" errors
+                d_model_factor = 0.5
+            else:
+                d_model_factor = _suggest_from_config(trial, 'd_model_factor', [0.5, 1.0, 2.0])
             batch_size = _suggest_from_config(trial, 'batch_size', [64, 128, 200])
             rec_learning_factor = _suggest_from_config(trial, 'rec_learning_factor', [0.25, 0.5, 1.0])
 
@@ -602,6 +608,7 @@ def check_cache(args, hpt, architecture, method, num_steps, csv_path):
         current_data = {
             'memory': int(args.memory),
             'state_size': int(hpt['state_size']),
+            'd_model_factor': float(hpt['d_model_factor']),
             'num_layers': int(hpt['num_layers']),
             'architecture': str(architecture),
             'method': str(method),
@@ -617,6 +624,7 @@ def check_cache(args, hpt, architecture, method, num_steps, csv_path):
             'lr_schedule': str(args.lr_schedule),
             'warmup_frac': float(args.warmup_frac),
             'rec_learning_factor': float(hpt['rec_learning_factor']),
+            'dropout': float(hpt['dropout']),
             'activation': str(args.activation),
             'prenorm': not args.remove_prenorm,
             'postnorm': bool(args.postnorm),
@@ -1260,6 +1268,8 @@ for iter_num, item in enumerate(hpt_samples):
         'lr_schedule': args.lr_schedule,
         'warmup_frac': args.warmup_frac,
         'rec_learning_factor': args.rec_learning_factor,
+        'd_model_factor': hpt['d_model_factor'],
+        'dropout': hpt['dropout'],
 
         'activation': args.activation,
         'prenorm': not args.remove_prenorm,
