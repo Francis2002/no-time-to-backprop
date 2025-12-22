@@ -218,9 +218,10 @@ else:
 
             # Model size / regularization
             state_size = _suggest_from_config(trial, 'state_size', hpt_space.get('state_size', [args.num_hidden]))
+            num_layers = _suggest_from_config(trial, 'num_layers', [1, 2, 3, 4])
             
-            if int(state_size) > 64:
-                # Force d_model_factor to 0.5 when state_size is > 64
+            if int(state_size) > 64 and num_layers > 3:
+                # Force d_model_factor to 0.5 when state_size is > 64 and num_layers is > 3
                 # We don't call Optuna suggestion here to avoid "dynamic value space" errors
                 d_model_factor = 0.5
             else:
@@ -231,7 +232,7 @@ else:
             hpt = {
                 'memory': args.memory,
                 'seed': hpt_space.get('seed', [43])[0],
-                'num_layers': int(_suggest_from_config(trial, 'num_layers', [1, 2, 3, 4])),
+                'num_layers': int(num_layers),
                 'state_size': int(state_size),
                 'd_model_factor': float(d_model_factor),
                 'dropout': float(_suggest_from_config(trial, 'dropout', {'type': 'float', 'low': 0.0, 'high': 0.3})),
