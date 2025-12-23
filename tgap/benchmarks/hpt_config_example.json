@@ -4,6 +4,7 @@
       "type": "categorical",
       "choices": [
         32,
+        50,
         64,
         100
       ]
@@ -19,9 +20,9 @@
     "num_layers": {
       "type": "categorical",
       "choices": [
-        2,
-        3,
-        4
+        4,
+        5,
+        6
       ]
     },
     "batch_size": {
@@ -41,7 +42,7 @@
     "pos_weight": {
       "type": "float",
       "low": 1.0,
-      "high": 1.0
+      "high": 10.0
     },
     "n_accumulation_steps": {
       "type": "int",
@@ -57,8 +58,7 @@
     "rec_learning_factor": {
       "type": "categorical",
       "choices": [
-        0.5,
-        1.0
+        0.5
       ]
     },
     "beta1": {
