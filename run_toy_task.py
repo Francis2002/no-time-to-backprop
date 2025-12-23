@@ -52,7 +52,7 @@ parser.add_argument('--memory', type=int, default=5, help='Memory level for the 
 
 # ---------------------------------------------------- Training loop ----------------------------------------------------
 
-parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates')
+parser.add_argument('--dedupe', action='store_true', help='Dedupe memory updates (needed for batching correctly)')
 parser.add_argument('--dont_store_results', action='store_true', help='Do not store results to disk')
 parser.add_argument('--num_epochs', type=int, default=5000, help='Number of epochs (5000 is the default for toy task)')
 
@@ -68,8 +68,8 @@ parser.add_argument('--early_stop_metric', type=str, default='loss', help='Metri
 # ---------------------------------------------------- Architecture choices ----------------------------------------------------
 
 # Model Size
-parser.add_argument('--num_layers', type=int, default=2, help='Number of layers')
-parser.add_argument('--num_hidden', type=int, default=32, help='Number of hidden units')
+parser.add_argument('--num_layers', type=int, default=5, help='Number of layers')
+parser.add_argument('--num_hidden', type=int, default=64, help='Number of hidden units')
 parser.add_argument('--d_model', type=int, default=16, help='Model dimension (only for LRU and ZUC), ignored if hpt is not optuna (otherwise we calculate it)')
 parser.add_argument('--double_dmodel', action='store_true', help='Use d_model = 2 * num_hidden (only for LRU and ZUC)')
 parser.add_argument('--equal_dmodel', action='store_true', help='Use d_model = num_hidden (only for LRU and ZUC)')
@@ -82,7 +82,7 @@ parser.add_argument('--remove_encoder', action='store_true', help='Remove encode
 parser.add_argument('--remove_layer_output', action='store_true', help='Remove layer output')
 parser.add_argument('--remove_extra_skip', action='store_true', help='Remove extra skip connection')
 parser.add_argument('--decoder', type=str, default='MLP', help='Decoder type (MLP or NONE)')
-parser.add_argument('--mixing', type=str, default='full', help='State coupling strategy (full, symmetric, none, rotational, rotational_full)')
+parser.add_argument('--mixing', type=str, default='rotational_full', help='State coupling strategy (full, symmetric, none, rotational, rotational_full)')
 parser.add_argument('--has_non_linearity_in_recurrence', action='store_true', help='Use non-linearity inside the recurrent cell (only for LRU and ZUC)')
 
 # ---------------------------------------------------- Hyperparameters ----------------------------------------------------
