@@ -205,6 +205,22 @@ else:
         if typ == 'float':
             return trial.suggest_float(name, float(spec['low']), float(spec['high']), log=bool(spec.get('log', False)))
         raise ValueError(f"Unknown specification type for {name}: {typ}")
+    
+    def _get_from_config(name, default, auxStr=None):
+        """Get a value from HPT_CONFIG['search'][name] if provided, otherwise return default."""
+        spec = (HPT_CONFIG.get('search', {}) or {}).get(name) if HPT_CONFIG else None
+        if spec is None:
+            print(f"[*] No config found for {name}, using default: {default}")
+            return default
+        
+        typ = spec.get('type')
+        if typ == 'categorical':
+            return spec['choices']
+        if typ == 'int':
+            return spec['low'] if auxStr == 'low' else spec['high']
+        if typ == 'float':
+            return spec['low'] if auxStr == 'low' else spec['high']
+        raise ValueError(f"Unknown specification type for {name}: {typ}")
 
     def optuna_iter():
         """Yield (trial, hpt_dict) pairs.
@@ -213,7 +229,69 @@ else:
         keep early-stopping/scheduling settings fixed via CLI args so the
         search focuses on model/optimizer knobs.
         """
-        for _ in range(args.n_trials):
+        csv_path = Path(*RESULTS_BASE) / 'global_results.csv'
+        total_cached = 0
+        if os.path.isfile(csv_path):
+            print(f"[*] Loading historical trials from {csv_path}...")
+            # We need to define distributions for Optuna to understand the search space of cached trials
+            distributions = {
+                'state_size': optuna.distributions.CategoricalDistribution(_get_from_config('state_size', [args.num_hidden])),
+                'num_layers': optuna.distributions.CategoricalDistribution(_get_from_config('num_layers', [1, 2, 3, 4])),
+                'd_model_factor': optuna.distributions.CategoricalDistribution(_get_from_config('d_model_factor', [0.5, 1.0, 2.0])),
+                'batch_size': optuna.distributions.CategoricalDistribution(_get_from_config('batch_size', [64, 128, 200])),
+                'rec_learning_factor': optuna.distributions.CategoricalDistribution(_get_from_config('rec_learning_factor', [0.25, 0.5, 1.0])),
+                'dropout': optuna.distributions.FloatDistribution(_get_from_config('dropout', 0.0, 'low'), _get_from_config('dropout', 0.3, 'high')),
+                'pos_weight': optuna.distributions.FloatDistribution(_get_from_config('pos_weight', 1.0, 'low'), _get_from_config('pos_weight', 20.0, 'high')),
+                'n_accumulation_steps': optuna.distributions.IntDistribution(_get_from_config('n_accumulation_steps', 1, 'low'), _get_from_config('n_accumulation_steps', 16, 'high')),
+                'learning_rate': optuna.distributions.FloatDistribution(_get_from_config('learning_rate', 1e-4, 'low'), _get_from_config('learning_rate', 1e-2, 'high'), log=True),
+                'beta1': optuna.distributions.FloatDistribution(_get_from_config('beta1', 0.85, 'low'), _get_from_config('beta1', 0.95, 'high')),
+                'beta2': optuna.distributions.FloatDistribution(_get_from_config('beta2', 0.95, 'low'), _get_from_config('beta2', 0.9999, 'high')),
+                'weight_decay': optuna.distributions.FloatDistribution(_get_from_config('weight_decay', 1e-9, 'low'), _get_from_config('weight_decay', 1e-3, 'high'), log=True),
+            }
+
+            with open(csv_path, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        # Map CSV row to parameters. Handle potential old names.
+                        params = {
+                            'state_size': int(row['state_size']),
+                            'num_layers': int(row['num_layers']),
+                            'd_model_factor': float(row['d_model_factor']),
+                            'batch_size': int(row['batch_size']),
+                            'rec_learning_factor': float(row['rec_learning_factor']),
+                            'dropout': float(row['dropout']),
+                            'pos_weight': float(row.get('pos_weight', 1.0)), # Default to 1.0 if missing
+                            'n_accumulation_steps': int(row.get('n_accumulation_steps', row.get('grad_accum_steps', 1))),
+                            'learning_rate': float(row['learning_rate']),
+                            'beta1': float(row['beta1']),
+                            'beta2': float(row['beta2']),
+                            'weight_decay': float(row['weight_decay']),
+                        }
+                        
+                        # Use best_val_roc_auc if available, otherwise best_loss
+                        if args.dataset == 'toy':
+                            value = float(row['best_loss'])
+                        else:
+                            value = float(row.get('best_val_roc_auc', row.get('best_loss', 0.0)))
+
+                        # Create and add the trial to the study
+                        trial = optuna.trial.create_trial(
+                            params=params,
+                            distributions=distributions,
+                            value=value,
+                        )
+                        study.add_trial(trial)
+                        total_cached += 1
+                    except Exception as e:
+                        print(f"[*] Warning: Could not load cached trial from CSV: {e}")
+            
+            print(f"[*] Successfully loaded {total_cached} trials from cache.")
+
+        # Subtract cached trials from n_trials
+        remaining_trials = max(0, args.n_trials - total_cached)
+        print(f"[*] Running {remaining_trials} trials.")
+        for i in range(remaining_trials):
             trial = study.ask()
 
             # Model size / regularization
@@ -621,7 +699,8 @@ def check_cache(args, hpt, architecture, method, num_steps, csv_path):
             'batching_strategy': str(args.batching_strategy),
             'window_mult': float(args.window_mult),
             'batch_size': int(hpt['batch_size']),
-            'grad_accum_steps': int(args.num_gradient_accumulation_steps),
+            'n_accumulation_steps': int(args.num_gradient_accumulation_steps),
+            'pos_weight': float(hpt['pos_weight']),
             'lr_schedule': str(args.lr_schedule),
             'warmup_frac': float(args.warmup_frac),
             'rec_learning_factor': float(hpt['rec_learning_factor']),
@@ -666,7 +745,7 @@ def check_cache(args, hpt, architecture, method, num_steps, csv_path):
                         break
                 elif isinstance(v, (int, float)):
                     try:
-                        if not math.isclose(float(v), float(row_val), rel_tol=1e-4):
+                        if not math.isclose(float(v), float(row_val), rel_tol=0.01):
                             match = False
                             break
                     except ValueError:
@@ -684,7 +763,6 @@ def check_cache(args, hpt, architecture, method, num_steps, csv_path):
                     return float(row.get('best_val_roc_auc', row.get('best_loss', 0.0)))
     return None
 
-
 for iter_num, item in enumerate(hpt_samples):
 
     if args.hpt == 'grid':
@@ -697,16 +775,7 @@ for iter_num, item in enumerate(hpt_samples):
 
     print(f"[*] Trial: {trial}")
     print(f"[*] HPT: {hpt}")
-
-    # Check cache
-    csv_path = Path(*RESULTS_BASE) / 'global_results.csv'
-    cached_result = check_cache(args, hpt, architecture, method, args.num_steps, csv_path)
-    if cached_result is not None:
-        print(f"[*] FOUND CACHED RESULT: {cached_result}. Skipping trial.")
-        if trial is not None:
-            study.tell(trial, float(cached_result))
-        continue
-
+    
     # Apply per-trial overrides that affect the data pipeline / model construction
     apply_hpt_to_args(args, hpt, {'steps_for_scheduler': USER_STEPS_FOR_SCHEDULER, 'rec_learning_factor': USER_REC_LR_FACTOR})
     memory = args.memory
@@ -1265,7 +1334,8 @@ for iter_num, item in enumerate(hpt_samples):
         'batching_strategy': args.batching_strategy,
         'window_mult': args.window_mult,
         'batch_size': args.batch_size,
-        'grad_accum_steps': args.num_gradient_accumulation_steps,
+        'n_accumulation_steps': args.num_gradient_accumulation_steps,
+        'pos_weight': hpt['pos_weight'],
         'lr_schedule': args.lr_schedule,
         'warmup_frac': args.warmup_frac,
         'rec_learning_factor': args.rec_learning_factor,
