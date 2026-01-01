@@ -165,7 +165,7 @@ def preprocess_temporal_csv(
         uniq_dsts = np.unique(dst)
         dst_mapping = {int(k): i + num_src_nodes for i, k in enumerate(uniq_dsts)}
         mapped_dsts = np.vectorize(lambda z: dst_mapping[int(z)])(dst)
-        num_nodes = num_src_nodes + len(mapped_dsts)
+        num_nodes = num_src_nodes + len(dst_mapping)
         dst = mapped_dsts
         all_nodes_mapped = np.concatenate([src, dst])
 
