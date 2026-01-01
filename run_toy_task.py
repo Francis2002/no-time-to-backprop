@@ -137,7 +137,7 @@ method = args.method.upper()
 architecture = args.architecture.upper()
 NUM_EPOCHS = args.num_epochs
 
-RESULTS_BASE = ['results_for_benchmarks', f'{args.dataset}_{method}']
+RESULTS_BASE = ['results_for_PIJE', f'{args.dataset}_{method}']
 print(f"\n[*] Results will be stored in {Path(*RESULTS_BASE).absolute()}")
 
 if args.dont_store_results:
@@ -165,8 +165,8 @@ if args.dataset in ['toy', 'epinions_ratings'] and args.task == 'link_classifica
 hpt_space = {
     #'memory': [1, 2, 3, 4, 5],
     'memory': [args.memory],
-    #'seed': [5, 11, 42, 123, 1984],
-    'seed': [43],
+    'seed': [5, 11, 43],
+    #'seed': [43],
     'learning_rate': [args.lr],
     'beta1': 0.9, 
     'beta2': 0.999,
@@ -802,6 +802,7 @@ for iter_num, item in enumerate(hpt_samples):
             args.dataset,
             val_ratio=0.15 if args.dataset != 'mooc' else 0.2, 
             test_ratio=0.15 if args.dataset != 'mooc' else 0.2,
+            bipartide=True,
             drop_hod_dow= not args.add_hod_dow,
             add_dt_feats= not args.no_dt_feats
         )
@@ -1107,7 +1108,7 @@ for iter_num, item in enumerate(hpt_samples):
     best_params = params
     for epoch in range(NUM_EPOCHS):
 
-        print_condition = epoch % 500 == 0 or (method in ['ONLINE', 'SPATIAL'] and num_steps*(args.batch_size + 1) > 1000 and epoch % 50 == 0)  or (args.dataset not in ['toy'] and epoch % 1 == 0) or (args.dataset in ['toy'] and args.num_epochs < 50 and epoch % 1 == 0)
+        print_condition = epoch % 10 == 0 or (method in ['ONLINE', 'SPATIAL'] and num_steps*(args.batch_size + 1) > 1000 and epoch % 50 == 0)  or (args.dataset not in ['toy'] and epoch % 1 == 0) or (args.dataset in ['toy'] and args.num_epochs < 50 and epoch % 1 == 0)
         if print_condition:
             print(f"[*] Starting Training Epoch {epoch + 1}...")
 

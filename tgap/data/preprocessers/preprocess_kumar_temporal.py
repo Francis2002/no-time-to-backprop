@@ -80,6 +80,7 @@ def preprocess_temporal_csv(
     *,
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
+    bipartide: bool = False,
     drop_hod_dow: bool = False,
     add_dt_feats: bool = True,
 ):
@@ -150,11 +151,22 @@ def preprocess_temporal_csv(
 
     # Map node ids to contiguous
     print("[*] Mapping node IDs...")
-    all_nodes = np.concatenate([src, dst])
-    all_nodes_mapped, mapping = _map_ids(all_nodes)
-    num_nodes = len(mapping)
-    src = all_nodes_mapped[:src.shape[0]]
-    dst = all_nodes_mapped[src.shape[0]:]
+    if not bipartide:
+        all_nodes = np.concatenate([src, dst])
+        all_nodes_mapped, mapping = _map_ids(all_nodes)
+        num_nodes = len(mapping)
+        src = all_nodes_mapped[:src.shape[0]]
+        dst = all_nodes_mapped[src.shape[0]:]
+    else:
+        mapped_srcs, src_mapping = _map_ids(src)
+        num_src_nodes = len(src_mapping)
+        src = mapped_srcs
+
+        uniq_dsts = np.unique(dst)
+        dst_mapping = {int(k): i + num_src_nodes for i, k in enumerate(uniq_dsts)}
+        mapped_dsts = np.vectorize(lambda z: dst_mapping[int(z)])(dst)
+        num_nodes = num_src_nodes + len(mapped_dsts)
+        dst = mapped_dsts
 
     # Find nodes with less than k events
     k = 2

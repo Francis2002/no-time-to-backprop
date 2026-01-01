@@ -5,25 +5,25 @@ echo "Starting comprehensive grid search experiments..."
 i=0
 
 # Configuration toggles - set to 1 to enable, 0 to disable
-ENABLE_METHODS=0
+ENABLE_METHODS=1
 ENABLE_ARCHITECTURES=0
-ENABLE_NUM_LAYERS=0
-ENABLE_NUM_HIDDEN=0
-ENABLE_MEMORY=0
+ENABLE_NUM_LAYERS=1
+ENABLE_NUM_HIDDEN=1
+ENABLE_MEMORY=1
 ENABLE_ACTIVATION=0
 ENABLE_DECODER=0
-ENABLE_MIXING=0
+ENABLE_MIXING=1
 ENABLE_DATASET=0
 
 # Parameter arrays
-methods=(ONLINE FBPTT) 
-architectures=(GRU ZUC)
-num_layers_arr=(3)
-num_hidden_arr=(32)
-memory_arr=(3)
-activations=(sigmoid full_glu)
-decoders=(MLP NONE)
-mixings=(rotational none full)
+methods=(TBPTT ONLINE FBPTT) 
+architectures=(ZUC)
+num_layers_arr=(1 2 4)
+num_hidden_arr=(32 64)
+memory_arr=(1 2)
+activations=(full_glu)
+decoders=(MLP)
+mixings=(rotational_full)
 datasets=(toy)
 
 # Set default values when disabled
@@ -61,6 +61,7 @@ for dataset in "${datasets[@]}"; do
                     --decoder $decoder \
                     --mixing $mixing \
                     --dataset $dataset \
+                    --lr_schedule constant \
                     --task link_regression \
                     --batching_strategy none \
                     --dropout 0.0 \
