@@ -167,6 +167,7 @@ def preprocess_temporal_csv(
         mapped_dsts = np.vectorize(lambda z: dst_mapping[int(z)])(dst)
         num_nodes = num_src_nodes + len(mapped_dsts)
         dst = mapped_dsts
+        all_nodes_mapped = np.concatenate([src, dst])
 
     # Find nodes with less than k events
     k = 2
