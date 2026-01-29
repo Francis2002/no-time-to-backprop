@@ -115,6 +115,9 @@ def main():
     p.add_argument("--outfile", type=str, default="")
     p.add_argument("--metric", type=str, default="auto",
                    help="One of {auto, average_final_100_loss, final_loss, best_loss}.")
+    p.add_argument("--comparison", type=str, default="none_vs_rotational",
+                   choices=["none_vs_rotational", "gated_vs_gated_full"],
+                   help="Which pair of mixings to compare. Default: none_vs_rotational")
 
     args = p.parse_args()
     
@@ -134,11 +137,22 @@ def main():
     df_all = pd.concat(dfs, ignore_index=True)
     metric = _pick_metric(df_all) if args.metric == "auto" else args.metric
 
-    # We need rows for both mixings: rotational and none
+    # Determine mixings to plot based on comparison arg
+    if args.comparison == "none_vs_rotational":
+        mixings_to_plot = ["none", "rotational"]
+        base_mixing = "none"
+    elif args.comparison == "gated_vs_gated_full":
+        mixings_to_plot = ["gated", "gated_full"]
+        base_mixing = "gated"
+    else:
+        # Should be covered by choices, but just in case
+        mixings_to_plot = ["none", "rotational"]
+        base_mixing = "none"
+
     df_all = _filter_df(
         df_all,
         architecture=args.architecture,
-        mixings=["rotational", "none"],
+        mixings=mixings_to_plot,
         activation=args.activation,
         layers=args.layers,
         hidden=args.hidden,
@@ -157,11 +171,18 @@ def main():
     axes = np.atleast_1d(axes)
 
     # Define colors/styles for combinations of (method, mixing)
+    # Define colors/styles for combinations of (method, mixing)
     combo_styles = {
         ("ONLINE", "rotational"): {"color": "tab:gray", "linestyle": "-", "label": "ONLINE rotational"},
         ("ONLINE", "none"):       {"color": "dimgray",  "linestyle": "--", "label": "ONLINE none"},
         ("FBPTT",  "rotational"): {"color": "tab:blue", "linestyle": "-", "label": "FBPTT rotational"},
         ("FBPTT",  "none"):       {"color": "steelblue","linestyle": "--", "label": "FBPTT none"},
+
+        # New styles for gated comparison
+        ("ONLINE", "gated_full"): {"color": "tab:gray", "linestyle": "-", "label": "ONLINE gated_full"},
+        ("ONLINE", "gated"):      {"color": "dimgray",  "linestyle": "--", "label": "ONLINE gated"},
+        ("FBPTT",  "gated_full"): {"color": "tab:blue", "linestyle": "-", "label": "FBPTT gated_full"},
+        ("FBPTT",  "gated"):      {"color": "steelblue","linestyle": "--", "label": "FBPTT gated"},
     }
 
     for row_idx, nl in enumerate(layers_sorted):
@@ -172,7 +193,7 @@ def main():
         labels = []
 
         for method in ["ONLINE", "FBPTT"]:
-            for mixing in ["rotational", "none"]:
+            for mixing in mixings_to_plot:
                 sm = sub[(sub["method"] == method) & (sub["mixing"] == mixing)].sort_values("memory")
                 if sm.empty:
                     continue
@@ -192,10 +213,10 @@ def main():
                 # Annotate points; push first/last more to the sides to avoid overlap with lines
                 n_pts = len(x)
                 for idx, (xi, yi) in enumerate(zip(x, y)):
-                    # Place annotation above the point for 'none', below for 'rotational'
-                    is_none = (mixing == "none")
-                    base_offset_y = 3 if is_none else -3
-                    base_va = "bottom" if is_none else "top"
+                    # Place annotation above the point for 'base' mixing (none/gated), below for 'improved' (rotational/gated_full)
+                    is_base = (mixing == base_mixing)
+                    base_offset_y = 3 if is_base else -3
+                    base_va = "bottom" if is_base else "top"
 
                     # Side overflow for endpoints: left for first, right for last
                     if idx == 0:

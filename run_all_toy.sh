@@ -16,14 +16,14 @@ ENABLE_MIXING=1
 ENABLE_DATASET=0
 
 # Parameter arrays
-methods=(TBPTT ONLINE FBPTT) 
+methods=(ONLINE FBPTT) 
 architectures=(ZUC)
-num_layers_arr=(1 2 4)
-num_hidden_arr=(32 64)
-memory_arr=(1 2)
+num_layers_arr=(3 4)
+num_hidden_arr=(32)
+memory_arr=(3 4 5)
 activations=(full_glu)
 decoders=(MLP)
-mixings=(rotational_full)
+mixings=(gated_full)
 datasets=(toy)
 
 # Set default values when disabled
@@ -34,7 +34,7 @@ datasets=(toy)
 [[ $ENABLE_MEMORY -eq 0 ]] && memory_arr=(4)
 [[ $ENABLE_ACTIVATION -eq 0 ]] && activations=(full_glu)
 [[ $ENABLE_DECODER -eq 0 ]] && decoders=(MLP)
-[[ $ENABLE_MIXING -eq 0 ]] && mixings=(rotational_full)
+[[ $ENABLE_MIXING -eq 0 ]] && mixings=(gated_full)
 [[ $ENABLE_DATASET -eq 0 ]] && datasets=(toy)
 
 # Grid search - most important parameters in inner loops (change most frequently)
@@ -68,7 +68,7 @@ for dataset in "${datasets[@]}"; do
                     --weight_decay 0.00 \
                     --batch_size 0 \
                     --num_epochs 5000 \
-                    --num_steps 10000 \
+                    --num_steps 1000 \
                     --num_nodes 100 \
                     --acc \
 

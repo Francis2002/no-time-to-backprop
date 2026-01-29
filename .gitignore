@@ -8,6 +8,8 @@ results_extra
 results_for_fixing_cossim
 results_cossim_final
 results_for_rotational_vs_none
+results_for_benchmarks
+results_gated
 figs_*
 grads_fbptt.txt
 grads_online.txt

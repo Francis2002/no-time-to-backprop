@@ -66,7 +66,7 @@ def _cos(a, b):
 def _extract_layer_seq_grads(grads, method, layer_idx, args):
     """
     Returns a dict with keys:
-      'nu','theta','gamma_log','B_re','B_im','D', and 'phi' (if mixing in ['rotational', 'rotational_full']) (some may be none)
+      'nu','theta','gamma_log','B_re','B_im','D', and 'phi' (if mixing in ['rotational', 'rotational_full', 'gated', 'gated_full']) (some may be none)
     """
     layer = grads['cell']['params']['encoder'][f'layers_{layer_idx}']['seq']
     # Some models may lack D; guard with .get
@@ -80,7 +80,7 @@ def _extract_layer_seq_grads(grads, method, layer_idx, args):
         'D':         layer.get('D',         None),
     }
 
-    if args.mixing in ['rotational', 'rotational_full']:
+    if args.mixing in ['rotational', 'rotational_full', 'gated', 'gated_full']:
         return_dict['phi'] = layer.get('phi', None)
 
     return return_dict
@@ -91,7 +91,7 @@ def _layer_group_vectors(grads, method, layer_idx, args):
       - 'lambda' = [nu, theta]
       - 'gamma'  = [gamma_log]
       - 'B'      = [B_re, B_im]
-      - 'phi'    = [phi] (if mixing in ['rotational', 'rotational_full'])
+      - 'phi'    = [phi] (if mixing in ['rotational', 'rotational_full', 'gated', 'gated_full'])
       - 'all'    = all of the above
     Returns a dict of numpy vectors.
     """
@@ -107,7 +107,7 @@ def _layer_group_vectors(grads, method, layer_idx, args):
     B   = _concat_valid([B_re, B_im])
     allv = _concat_valid([lam, gam, B])
 
-    if args.mixing in ['rotational', 'rotational_full']:
+    if args.mixing in ['rotational', 'rotational_full', 'gated', 'gated_full']:
         phi = _np_array(g['phi'])
         allv = _concat_valid([lam, gam, B, phi])
         return {'lambda': lam, 'gamma': gam, 'B': B, 'phi': phi, 'all': allv}

@@ -103,8 +103,6 @@ class LRU(nn.Module):
         h = self._rotate_pair_from_eigen(z[:, :, None])   # (2, H, 1)
         return h[:, :, 0].reshape(-1)                     # back to (2*H,)
 
-
-
     def get_diag_lambda(self, nu=None, theta=None):
         """
         Transform parameters nu and theta into the diagonal of the recurrent
@@ -179,12 +177,26 @@ class LRU(nn.Module):
         # Running the LRU
         Bu = B_norm @ inputs
 
+        if self.mixing in ['gated', 'gated_full']:
+            # We want to do sig(phi) * lambda_ss * h_s + (1 - sig(phi)) * lambda_sd * h_d + Bu
+            # But we want the interface to be the same as the other mixings
+            # So we need to create a 2x2 thing with sig(phi)s and (1-sig(phi))s
+            phi = self.phi
+            sig_phi = jax.nn.sigmoid(phi)
+            one_minus_sig_phi = 1 - sig_phi
+            sig_phi_matrix = jnp.array([sig_phi, one_minus_sig_phi, sig_phi, one_minus_sig_phi])
+            sig_phi_matrix = sig_phi_matrix.reshape(2, 2, self.d_hidden)
+
         if self.training_mode == "bptt":
 
             if self.mixing in ["full", "symmetric", "none", "rotational", "rotational_full"]:
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * old_hidden_states, axis=1).reshape(-1)
+            elif self.mixing in ['gated', 'gated_full']:
+                diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
+                old_hidden_states = old_hidden_states.reshape(1, 2, -1)
+                lambda_states = jnp.sum(sig_phi_matrix * diag_lambda * old_hidden_states, axis=1).reshape(-1)
             else:
                 raise ValueError("Mixing type not recognized")
         else:
@@ -193,6 +205,10 @@ class LRU(nn.Module):
                 diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
                 old_hidden_states = old_hidden_states.reshape(1, 2, -1)
                 lambda_states = jnp.sum(diag_lambda * jax.lax.stop_gradient(old_hidden_states), axis=1).reshape(-1)
+            elif self.mixing in ['gated', 'gated_full']:
+                diag_lambda = diag_lambda.reshape(2, 2, self.d_hidden)
+                old_hidden_states = old_hidden_states.reshape(1, 2, -1)
+                lambda_states = jnp.sum(sig_phi_matrix * diag_lambda * jax.lax.stop_gradient(old_hidden_states), axis=1).reshape(-1)
             else:
                 raise ValueError("Mixing type not recognized")
 
@@ -300,7 +316,7 @@ class LRU(nn.Module):
             self.normalizer = 1.0
         elif self.mixing == "none":
             self.normalizer = 1.0
-        elif self.mixing in ["rotational", "rotational_full"]:
+        elif self.mixing in ["rotational", "rotational_full", "gated", "gated_full"]:
             self.normalizer = 1.0
             self.phi = self.param("phi", matrix_init, (self.d_hidden,))
         else:
@@ -353,7 +369,7 @@ class LRU(nn.Module):
         if self.online and self.approximation_type not in ["spatial", "reservoir"]:
 
             # Unpack traces
-            if self.mixing == "rotational_full":
+            if self.mixing in ["rotational_full", "gated_full"]:
                 raw_lambda_trace, raw_gamma_trace, raw_B_trace, raw_phi_trace = raw_traces
                 traces = (
                     jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
@@ -409,17 +425,26 @@ class LRU(nn.Module):
                 # Identity multiplier
                 multiplier = jnp.ones_like(hidden_states)
 
+            if self.mixing in ['gated', 'gated_full']:
+                # Create multiplier because of the gate multiplication
+                phi = self.phi
+                sig_phi = jax.nn.sigmoid(phi)
+                one_minus_sig_phi = 1 - sig_phi
+                gate_multiplier = jnp.array([sig_phi, one_minus_sig_phi])
+            else:
+                gate_multiplier = jnp.ones_like(hidden_states)
+
             # Update traces for B, lambda and gamma
             if self.approximation_type in ["1truncated"]:
                 Lambda_elements = self.get_diag_lambda().reshape(4, self.d_hidden)
 
                 # Update for trace lambda
                 new_traces_lambda_src_node = jnp.zeros_like(traces[0][0])
-                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(gate_multiplier * self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_src_node *= multiplier[0].reshape(1, self.d_hidden) # src hidden_states
 
                 new_traces_lambda_dst_node = jnp.zeros_like(traces[0][1])
-                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(gate_multiplier * self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_dst_node *= multiplier[1].reshape(1, self.d_hidden)
 
                 # Update for trace gamma
@@ -437,37 +462,38 @@ class LRU(nn.Module):
                 Lambda_elements = self.get_diag_lambda().reshape(4, self.d_hidden)
 
                 # Update for trace lambda
-                new_traces_lambda_src_node = (self.normalizer * Lambda_elements[0] * traces[0][0] + self.normalizer * Lambda_elements[1] * traces[0][1]) # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
-                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_src_node = (gate_multiplier[0] * self.normalizer * Lambda_elements[0] * traces[0][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[1] * traces[0][1]) # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_lambda_src_node = new_traces_lambda_src_node.at[:2].add(gate_multiplier * self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_src_node *= multiplier[0].reshape(1, self.d_hidden) # src hidden_states
 
-                new_traces_lambda_dst_node = self.normalizer *Lambda_elements[2] * traces[0][0] + self.normalizer *Lambda_elements[3] * traces[0][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
-                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
+                new_traces_lambda_dst_node = (gate_multiplier[0] * self.normalizer * Lambda_elements[2] * traces[0][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[3] * traces[0][1]) # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_lambda_dst_node = new_traces_lambda_dst_node.at[2:].add(gate_multiplier * self.normalizer * old_hidden_states.reshape(2, self.d_hidden))
                 new_traces_lambda_dst_node *= multiplier[1].reshape(1, self.d_hidden)
                 
                 # Update for trace gamma
                 Bu_elements_gamma = Bu_elements.reshape(2, self.d_hidden) # (2*d_hidden)
 
-                new_traces_gamma_src_node = self.normalizer * Lambda_elements[0] * traces[1][0] + self.normalizer * Lambda_elements[1] * traces[1][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_gamma_src_node = gate_multiplier[0] * self.normalizer * Lambda_elements[0] * traces[1][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[1] * traces[1][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
                 new_traces_gamma_src_node = new_traces_gamma_src_node.at[0].add(Bu_elements_gamma[0])
                 new_traces_gamma_src_node *= multiplier[0].reshape(1, self.d_hidden)
 
-                new_traces_gamma_dst_node = self.normalizer * Lambda_elements[2] * traces[1][0] + self.normalizer * Lambda_elements[3] * traces[1][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_gamma_dst_node = gate_multiplier[0] * self.normalizer * Lambda_elements[2] * traces[1][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[3] * traces[1][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
                 new_traces_gamma_dst_node = new_traces_gamma_dst_node.at[1].add(Bu_elements_gamma[1])
                 new_traces_gamma_dst_node *= multiplier[1].reshape(1, self.d_hidden)
 
             # Update trace for B
             if self.approximation_type in ["full", "snap1"]:
                 full_Lambda_elements = self.get_diag_lambda().reshape(4, self.d_hidden, 1)
+                full_gate_multiplier = gate_multiplier.reshape(2, self.d_hidden, 1)
 
                 gammau_elements = jnp.outer(self.get_diag_gamma(), inputs
                 ).astype(jnp.complex64).reshape(2, self.d_hidden, self.d_model) if self.d_in is None else jnp.outer(self.get_diag_gamma(), inputs).astype(jnp.complex64).reshape(2, self.d_hidden, self.d_in) # (2, d_hidden, d_model) or (2, d_hidden, d_in)
 
-                new_traces_B_src_node = self.normalizer * full_Lambda_elements[0] * traces[2][0] + self.normalizer * full_Lambda_elements[1] * traces[2][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+                new_traces_B_src_node = full_gate_multiplier[0] * self.normalizer * full_Lambda_elements[0] * traces[2][0] + full_gate_multiplier[1] * self.normalizer * full_Lambda_elements[1] * traces[2][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
                 new_traces_B_src_node = new_traces_B_src_node.at[0].add(gammau_elements[0])
                 new_traces_B_src_node *= multiplier[0].reshape(1, self.d_hidden, 1)
 
-                new_traces_B_dst_node = self.normalizer * full_Lambda_elements[2] * traces[2][0] + self.normalizer * full_Lambda_elements[3] * traces[2][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+                new_traces_B_dst_node = full_gate_multiplier[0] * self.normalizer * full_Lambda_elements[2] * traces[2][0] + full_gate_multiplier[1] * self.normalizer * full_Lambda_elements[3] * traces[2][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
                 new_traces_B_dst_node = new_traces_B_dst_node.at[1].add(gammau_elements[1])
                 new_traces_B_dst_node *= multiplier[1].reshape(1, self.d_hidden, 1)
             else:
@@ -487,6 +513,31 @@ class LRU(nn.Module):
                 [new_traces_B_src_node, new_traces_B_dst_node], axis=0
             ).reshape(2, -1, self.d_in)
         ]
+        if self.mixing == "gated_full":
+            new_traces_lambda, new_traces_gamma, new_traces_B = new_traces
+
+            sig_phi_prime = jax.nn.sigmoid(self.phi) * (1 - jax.nn.sigmoid(self.phi))
+
+            # Update for trace phi
+            new_traces_phi_src_node = gate_multiplier[0] * self.normalizer * Lambda_elements[0] * traces[3][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[1] * traces[3][1] # lambda_elements[0] -> src_src, lambda_elements[1] -> src_dst
+            new_traces_phi_src_node = new_traces_phi_src_node + sig_phi_prime * self.normalizer * Lambda_elements[0] * old_hidden_states.reshape(2, self.d_hidden)[0] + (- sig_phi_prime) * self.normalizer * Lambda_elements[1] * old_hidden_states.reshape(2, self.d_hidden)[1]
+            new_traces_phi_src_node *= multiplier[0].reshape(self.d_hidden,)
+
+            new_traces_phi_dst_node = gate_multiplier[0] * self.normalizer * Lambda_elements[2] * traces[3][0] + gate_multiplier[1] * self.normalizer * Lambda_elements[3] * traces[3][1] # lambda_elements[2] -> dst_src, lambda_elements[3] -> dst_dst
+            new_traces_phi_dst_node = new_traces_phi_dst_node + sig_phi_prime * self.normalizer * Lambda_elements[2] * old_hidden_states.reshape(2, self.d_hidden)[0] + (- sig_phi_prime) * self.normalizer * Lambda_elements[3] * old_hidden_states.reshape(2, self.d_hidden)[1]
+            new_traces_phi_dst_node *= multiplier[1].reshape(self.d_hidden,)
+
+            new_traces_phi = jnp.stack(
+                [new_traces_phi_src_node, new_traces_phi_dst_node], axis=0
+            ).reshape(2, -1)
+
+            new_traces = [
+                new_traces_lambda,
+                new_traces_gamma,
+                new_traces_B,
+                new_traces_phi,
+            ]
+
         if self.mixing in ["rotational", "rotational_full"]:
             # Rotate traces back to the original basis
             new_lambda_tr_z, new_gamma_tr_z, new_B_tr_z = new_traces
@@ -574,7 +625,7 @@ class LRU(nn.Module):
         # The others are automatically computed with spatial backpropagation
 
         # Unpack traces
-        if self.mixing == "rotational_full":
+        if self.mixing in ["rotational_full", "gated_full"]:
             raw_lambda_trace, raw_gamma_trace, raw_B_trace, raw_phi_trace = raw_traces
             traces = (
                     jnp.reshape(raw_lambda_trace, (2, 4, self.d_hidden,)),
@@ -651,7 +702,7 @@ class LRU(nn.Module):
             grad["B_im"] = -grad_B.imag  # Comes from the use of Writtinger derivatives
         
         # Grads for phi if needed
-        if self.mixing == "rotational_full" and self.approximation_type in ["snap1", "full", "full_rec_simpleB"]:
+        if self.mixing in ["rotational_full", "gated_full"] and self.approximation_type in ["snap1", "full", "full_rec_simpleB"]:
             delta_phi = jnp.real(jnp.sum(dL * traces[3], axis=0).reshape(-1))
 
             grad["phi"] = delta_phi
